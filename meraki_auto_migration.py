@@ -1,83 +1,709 @@
 #!/usr/bin/env python3
 """
-Meraki Migration Tool - Production Version
-Uses environment variables for secure credential handling
+Meraki Network Migration Tool with UI Automation
+Automatically migrates devices between organizations using API and UI automation
 """
 
-import os
-import sys
-from meraki_auto_migration import AutomatedMigrationTool
+import json
 import logging
+import argparse
+import time
 from datetime import datetime
+from typing import Dict, List, Any, Optional, Tuple
+import requests
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import os
 
-# Setup logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(f'migration_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.FileHandler(f'meraki_auto_migration_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 
-def get_credentials():
-    """Get credentials from environment variables"""
-    api_key = os.environ.get('MERAKI_API_KEY')
-    username = os.environ.get('MERAKI_USERNAME')
-    password = os.environ.get('MERAKI_PASSWORD')
+class MerakiAPIClient:
+    """Handles all Meraki API operations"""
     
-    if not all([api_key, username, password]):
-        logger.error("Missing required environment variables")
-        print("\nPlease set the following environment variables:")
-        print("  export MERAKI_API_KEY='your-api-key'")
-        print("  export MERAKI_USERNAME='your-email@company.com'")
-        print("  export MERAKI_PASSWORD='your-password'")
-        sys.exit(1)
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.meraki.com/api/v1"
+        self.headers = {
+            "X-Cisco-Meraki-API-Key": api_key,
+            "Content-Type": "application/json"
+        }
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+        
+    def _api_call(self, method: str, endpoint: str, data: Optional[Dict] = None, 
+                  params: Optional[Dict] = None) -> Any:
+        """Make API call with retry logic"""
+        url = f"{self.base_url}{endpoint}"
+        
+        for attempt in range(3):
+            try:
+                response = self.session.request(
+                    method=method,
+                    url=url,
+                    json=data,
+                    params=params
+                )
+                
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', 1))
+                    logger.warning(f"Rate limited. Waiting {retry_after} seconds...")
+                    time.sleep(retry_after)
+                    continue
+                
+                response.raise_for_status()
+                
+                if response.content:
+                    return response.json()
+                return None
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API call failed: {e}")
+                if attempt == 2:
+                    raise
+                time.sleep(2 ** attempt)
     
-    return api_key, username, password
+    def get_organizations(self) -> List[Dict]:
+        """Get all organizations"""
+        return self._api_call("GET", "/organizations")
+    
+    def get_org_name(self, org_id: str) -> str:
+        """Get organization name"""
+        orgs = self.get_organizations()
+        for org in orgs:
+            if org['id'] == org_id:
+                return org['name']
+        return "Unknown"
+    
+    def get_networks(self, org_id: str) -> List[Dict]:
+        """Get all networks in an organization"""
+        return self._api_call("GET", f"/organizations/{org_id}/networks")
+    
+    def get_network_info(self, network_id: str) -> Dict:
+        """Get network information"""
+        return self._api_call("GET", f"/networks/{network_id}")
+    
+    def get_devices(self, network_id: str) -> List[Dict]:
+        """Get all devices in a network"""
+        return self._api_call("GET", f"/networks/{network_id}/devices")
+    
+    def create_network(self, org_id: str, network_config: Dict) -> str:
+        """Create a new network"""
+        return self._api_call("POST", f"/organizations/{org_id}/networks", data=network_config)['id']
+    
+    def add_devices_to_network(self, network_id: str, serials: List[str]) -> bool:
+        """Add devices to network"""
+        try:
+            self._api_call("POST", f"/networks/{network_id}/devices/claim", 
+                          data={"serials": serials})
+            return True
+        except Exception as e:
+            logger.error(f"Failed to add devices to network: {e}")
+            return False
+
+
+class ComprehensiveBackup:
+    """Handles comprehensive backup of all network and device settings"""
+    
+    def __init__(self, api_client: MerakiAPIClient):
+        self.api = api_client
+    
+    def backup_all_settings(self, org_id: str, network_id: str) -> Dict:
+        """Backup all network and device settings comprehensively"""
+        logger.info(f"Starting comprehensive backup for network {network_id}")
+        
+        backup = {
+            "timestamp": datetime.now().isoformat(),
+            "org_id": org_id,
+            "org_name": self.api.get_org_name(org_id),
+            "network_id": network_id,
+            "network_info": {},
+            "devices": [],
+            "network_settings": {
+                "switch": {},
+                "routing": {},
+                "security": {},
+                "monitoring": {}
+            },
+            "device_settings": {}
+        }
+        
+        # Get network info
+        backup["network_info"] = self.api.get_network_info(network_id)
+        logger.info("Backed up network info")
+        
+        # Get devices
+        devices = self.api.get_devices(network_id)
+        backup["devices"] = devices
+        logger.info(f"Found {len(devices)} devices")
+        
+        # Backup network-level switch settings
+        self._backup_switch_network_settings(network_id, backup["network_settings"]["switch"])
+        
+        # Backup routing settings
+        self._backup_routing_settings(network_id, backup["network_settings"]["routing"])
+        
+        # Backup security settings
+        self._backup_security_settings(network_id, backup["network_settings"]["security"])
+        
+        # Backup monitoring settings
+        self._backup_monitoring_settings(network_id, backup["network_settings"]["monitoring"])
+        
+        # Backup device-specific settings
+        for device in devices:
+            serial = device['serial']
+            backup["device_settings"][serial] = self._backup_device_settings(serial, device)
+        
+        return backup
+    
+    def _backup_switch_network_settings(self, network_id: str, settings: Dict):
+        """Backup switch-specific network settings"""
+        endpoints = {
+            "stp": f"/networks/{network_id}/switch/stp",
+            "mtu": f"/networks/{network_id}/switch/mtu",
+            "settings": f"/networks/{network_id}/switch/settings",
+            "accessPolicies": f"/networks/{network_id}/switch/accessPolicies",
+            "portSchedules": f"/networks/{network_id}/switch/portSchedules",
+            "qosRules": f"/networks/{network_id}/switch/qosRules",
+            "stormControl": f"/networks/{network_id}/switch/stormControl",
+            "dhcpServerPolicy": f"/networks/{network_id}/switch/dhcpServerPolicy",
+            "dscpToCosMappings": f"/networks/{network_id}/switch/dscp",
+            "alternateManagementInterface": f"/networks/{network_id}/switch/alternateManagementInterface",
+            "linkAggregations": f"/networks/{network_id}/switch/linkAggregations"
+        }
+        
+        for name, endpoint in endpoints.items():
+            try:
+                settings[name] = self.api._api_call("GET", endpoint)
+                logger.info(f"Backed up switch {name}")
+            except Exception as e:
+                logger.warning(f"Could not backup switch {name}: {e}")
+    
+    def _backup_routing_settings(self, network_id: str, settings: Dict):
+        """Backup routing settings"""
+        endpoints = {
+            "staticRoutes": f"/networks/{network_id}/appliance/staticRoutes",
+            "ospf": f"/networks/{network_id}/switch/routing/ospf",
+            "multicast": f"/networks/{network_id}/switch/routing/multicast",
+            "warmSpare": f"/networks/{network_id}/switch/warmSpare"
+        }
+        
+        for name, endpoint in endpoints.items():
+            try:
+                settings[name] = self.api._api_call("GET", endpoint)
+                logger.info(f"Backed up routing {name}")
+            except Exception as e:
+                logger.warning(f"Could not backup routing {name}: {e}")
+    
+    def _backup_security_settings(self, network_id: str, settings: Dict):
+        """Backup security settings including ACLs"""
+        endpoints = {
+            "accessControlLists": f"/networks/{network_id}/switch/accessControlLists",
+            "portSecurity": f"/networks/{network_id}/switch/portSecurity",
+            "stpGuard": f"/networks/{network_id}/switch/stpGuard"
+        }
+        
+        for name, endpoint in endpoints.items():
+            try:
+                settings[name] = self.api._api_call("GET", endpoint)
+                logger.info(f"Backed up security {name}")
+            except Exception as e:
+                logger.warning(f"Could not backup security {name}: {e}")
+    
+    def _backup_monitoring_settings(self, network_id: str, settings: Dict):
+        """Backup monitoring settings"""
+        endpoints = {
+            "snmp": f"/networks/{network_id}/snmp",
+            "syslog": f"/networks/{network_id}/syslogServers",
+            "netflow": f"/networks/{network_id}/netflow",
+            "alerts": f"/networks/{network_id}/alerts/settings"
+        }
+        
+        for name, endpoint in endpoints.items():
+            try:
+                settings[name] = self.api._api_call("GET", endpoint)
+                logger.info(f"Backed up monitoring {name}")
+            except Exception as e:
+                logger.warning(f"Could not backup monitoring {name}: {e}")
+    
+    def _backup_device_settings(self, serial: str, device_info: Dict) -> Dict:
+        """Backup all device-specific settings"""
+        logger.info(f"Backing up device {serial} ({device_info.get('name', 'Unnamed')})")
+        
+        settings = {
+            "info": device_info,
+            "ports": [],
+            "management": {},
+            "routing": {},
+            "dhcp": {}
+        }
+        
+        # Management interface (includes IP settings)
+        try:
+            settings["management"] = self.api._api_call("GET", f"/devices/{serial}/managementInterface")
+        except Exception as e:
+            logger.warning(f"Could not backup management interface for {serial}: {e}")
+        
+        # Switch ports (all port-level settings)
+        if device_info.get('model', '').startswith('MS'):
+            try:
+                settings["ports"] = self.api._api_call("GET", f"/devices/{serial}/switch/ports")
+                logger.info(f"Backed up {len(settings['ports'])} ports for {serial}")
+            except Exception as e:
+                logger.warning(f"Could not backup ports for {serial}: {e}")
+            
+            # Routing interfaces (Layer 3)
+            try:
+                settings["routing"]["interfaces"] = self.api._api_call(
+                    "GET", f"/devices/{serial}/switch/routing/interfaces")
+            except Exception:
+                pass
+            
+            # Static routes
+            try:
+                settings["routing"]["staticRoutes"] = self.api._api_call(
+                    "GET", f"/devices/{serial}/switch/routing/staticRoutes")
+            except Exception:
+                pass
+            
+            # DHCP settings
+            try:
+                settings["dhcp"]["subnets"] = self.api._api_call(
+                    "GET", f"/devices/{serial}/switch/dhcp/v4/servers")
+            except Exception:
+                pass
+        
+        return settings
+
+
+class MerakiUIAutomation:
+    """Handles UI automation for device unclaim/claim operations"""
+    
+    def __init__(self, username: str, password: str, headless: bool = False):
+        self.username = username
+        self.password = password
+        self.driver = None
+        self.wait = None
+        self.headless = headless
+        
+    def __enter__(self):
+        self.setup_driver()
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.driver:
+            self.driver.quit()
+    
+    def setup_driver(self):
+        """Setup Chrome driver with options"""
+        options = webdriver.ChromeOptions()
+        if self.headless:
+            options.add_argument('--headless')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        
+        self.driver = webdriver.Chrome(options=options)
+        self.wait = WebDriverWait(self.driver, 20)
+        logger.info("Chrome driver initialized")
+    
+    def login(self):
+        """Login to Meraki Dashboard"""
+        logger.info("Logging into Meraki Dashboard")
+        self.driver.get("https://dashboard.meraki.com")
+        
+        # Enter username
+        username_field = self.wait.until(
+            EC.presence_of_element_located((By.ID, "email"))
+        )
+        username_field.send_keys(self.username)
+        username_field.send_keys(Keys.RETURN)
+        
+        # Wait and enter password
+        time.sleep(2)
+        password_field = self.wait.until(
+            EC.presence_of_element_located((By.ID, "password"))
+        )
+        password_field.send_keys(self.password)
+        password_field.send_keys(Keys.RETURN)
+        
+        # Wait for dashboard to load
+        self.wait.until(
+            EC.presence_of_element_located((By.CLASS_NAME, "main-navigation"))
+        )
+        logger.info("Successfully logged in")
+        time.sleep(3)
+    
+    def select_organization(self, org_name: str):
+        """Select organization by name"""
+        logger.info(f"Selecting organization: {org_name}")
+        
+        # Click org selector
+        org_selector = self.wait.until(
+            EC.element_to_be_clickable((By.CLASS_NAME, "org-selector"))
+        )
+        org_selector.click()
+        
+        # Find and click org
+        time.sleep(1)
+        org_elements = self.driver.find_elements(By.CLASS_NAME, "org-name")
+        for elem in org_elements:
+            if org_name.lower() in elem.text.lower():
+                elem.click()
+                logger.info(f"Selected organization: {org_name}")
+                time.sleep(3)
+                return
+        
+        raise Exception(f"Organization '{org_name}' not found")
+    
+    def unclaim_devices(self, org_name: str, device_serials: List[str]) -> bool:
+        """Unclaim devices from organization"""
+        try:
+            self.select_organization(org_name)
+            
+            # Navigate to inventory
+            logger.info("Navigating to Organization > Inventory")
+            org_menu = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//span[text()='Organization']"))
+            )
+            org_menu.click()
+            
+            inventory_link = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Inventory')]"))
+            )
+            inventory_link.click()
+            
+            time.sleep(3)
+            
+            # Search and select devices
+            for serial in device_serials:
+                logger.info(f"Selecting device {serial}")
+                
+                # Search for device
+                search_box = self.wait.until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "search-box"))
+                )
+                search_box.clear()
+                search_box.send_keys(serial)
+                search_box.send_keys(Keys.RETURN)
+                
+                time.sleep(2)
+                
+                # Select device checkbox
+                checkbox = self.wait.until(
+                    EC.element_to_be_clickable((By.XPATH, f"//tr[contains(.,'{serial}')]//input[@type='checkbox']"))
+                )
+                checkbox.click()
+            
+            # Click remove button
+            logger.info("Removing devices from organization")
+            remove_btn = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Remove')]"))
+            )
+            remove_btn.click()
+            
+            # Confirm removal
+            confirm_btn = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Remove from organization')]"))
+            )
+            confirm_btn.click()
+            
+            logger.info(f"Successfully unclaimed {len(device_serials)} devices")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to unclaim devices: {e}")
+            return False
+    
+    def claim_devices(self, org_name: str, device_serials: List[str]) -> bool:
+        """Claim devices in organization"""
+        try:
+            self.select_organization(org_name)
+            
+            # Navigate to inventory
+            logger.info("Navigating to Organization > Inventory")
+            org_menu = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//span[text()='Organization']"))
+            )
+            org_menu.click()
+            
+            inventory_link = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Inventory')]"))
+            )
+            inventory_link.click()
+            
+            time.sleep(3)
+            
+            # Click claim button
+            claim_btn = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Claim')]"))
+            )
+            claim_btn.click()
+            
+            # Enter serials
+            logger.info(f"Claiming {len(device_serials)} devices")
+            serials_field = self.wait.until(
+                EC.presence_of_element_located((By.XPATH, "//textarea[@placeholder='Enter serials']"))
+            )
+            serials_field.send_keys('\n'.join(device_serials))
+            
+            # Submit claim
+            submit_btn = self.wait.until(
+                EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Claim')]"))
+            )
+            submit_btn.click()
+            
+            # Wait for success
+            time.sleep(5)
+            
+            logger.info(f"Successfully claimed {len(device_serials)} devices")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to claim devices: {e}")
+            return False
+
+
+class ComprehensiveRestore:
+    """Handles restoration of all settings"""
+    
+    def __init__(self, api_client: MerakiAPIClient):
+        self.api = api_client
+    
+    def restore_all_settings(self, backup: Dict, target_network_id: str, device_mapping: Optional[Dict] = None):
+        """Restore all settings from backup"""
+        logger.info(f"Starting comprehensive restore to network {target_network_id}")
+        
+        # Restore network-level settings
+        self._restore_network_settings(backup["network_settings"], target_network_id)
+        
+        # Restore device-specific settings
+        if device_mapping:
+            self._restore_device_settings(backup["device_settings"], device_mapping)
+        else:
+            logger.warning("No device mapping provided, skipping device-specific settings")
+    
+    def _restore_network_settings(self, settings: Dict, network_id: str):
+        """Restore network-level settings"""
+        
+        # Restore switch settings
+        switch_settings = settings.get("switch", {})
+        
+        # STP
+        if "stp" in switch_settings:
+            try:
+                self.api._api_call("PUT", f"/networks/{network_id}/switch/stp", 
+                                  data=switch_settings["stp"])
+                logger.info("Restored STP settings")
+            except Exception as e:
+                logger.error(f"Failed to restore STP: {e}")
+        
+        # MTU
+        if "mtu" in switch_settings:
+            try:
+                self.api._api_call("PUT", f"/networks/{network_id}/switch/mtu", 
+                                  data=switch_settings["mtu"])
+                logger.info("Restored MTU settings")
+            except Exception as e:
+                logger.error(f"Failed to restore MTU: {e}")
+        
+        # Access Policies
+        if "accessPolicies" in switch_settings:
+            try:
+                for policy in switch_settings["accessPolicies"]:
+                    policy_data = {k: v for k, v in policy.items() if k != "accessPolicyNumber"}
+                    self.api._api_call("POST", f"/networks/{network_id}/switch/accessPolicies", 
+                                      data=policy_data)
+                logger.info("Restored access policies")
+            except Exception as e:
+                logger.error(f"Failed to restore access policies: {e}")
+        
+        # SNMP
+        if "snmp" in settings.get("monitoring", {}):
+            try:
+                self.api._api_call("PUT", f"/networks/{network_id}/snmp", 
+                                  data=settings["monitoring"]["snmp"])
+                logger.info("Restored SNMP settings")
+            except Exception as e:
+                logger.error(f"Failed to restore SNMP: {e}")
+    
+    def _restore_device_settings(self, device_settings: Dict, device_mapping: Dict):
+        """Restore device-specific settings"""
+        
+        for old_serial, new_serial in device_mapping.items():
+            if old_serial not in device_settings:
+                continue
+            
+            settings = device_settings[old_serial]
+            logger.info(f"Restoring settings for device {new_serial}")
+            
+            # Restore management interface
+            if "management" in settings:
+                try:
+                    mgmt_data = {k: v for k, v in settings["management"].items() 
+                               if k not in ["ddnsHostnames"]}
+                    self.api._api_call("PUT", f"/devices/{new_serial}/managementInterface", 
+                                      data=mgmt_data)
+                    logger.info(f"Restored management interface for {new_serial}")
+                except Exception as e:
+                    logger.error(f"Failed to restore management interface: {e}")
+            
+            # Restore switch ports
+            if "ports" in settings:
+                for port in settings["ports"]:
+                    port_id = port["portId"]
+                    port_data = {k: v for k, v in port.items() 
+                               if k not in ["portId", "warnings", "errors"]}
+                    
+                    try:
+                        self.api._api_call("PUT", f"/devices/{new_serial}/switch/ports/{port_id}", 
+                                          data=port_data)
+                    except Exception as e:
+                        logger.warning(f"Failed to restore port {port_id}: {e}")
+
+
+class AutomatedMigrationTool:
+    """Main tool for automated migration"""
+    
+    def __init__(self, api_key: str, username: str, password: str):
+        self.api = MerakiAPIClient(api_key)
+        self.username = username
+        self.password = password
+        self.backup_tool = ComprehensiveBackup(self.api)
+        self.restore_tool = ComprehensiveRestore(self.api)
+    
+    def execute_migration(self, source_org_id: str, source_network_id: str, 
+                         target_org_id: str, target_network_name: Optional[str] = None):
+        """Execute complete automated migration"""
+        
+        # Step 1: Comprehensive backup
+        logger.info("=" * 50)
+        logger.info("STEP 1: Backing up all settings")
+        logger.info("=" * 50)
+        
+        backup = self.backup_tool.backup_all_settings(source_org_id, source_network_id)
+        
+        # Save backup
+        backup_file = f"migration_backup_{source_network_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(backup_file, 'w') as f:
+            json.dump(backup, f, indent=2)
+        logger.info(f"Backup saved to {backup_file}")
+        
+        # Get device serials
+        device_serials = [d['serial'] for d in backup['devices']]
+        logger.info(f"Found {len(device_serials)} devices to migrate")
+        
+        # Step 2: UI Automation - Unclaim and Claim
+        logger.info("=" * 50)
+        logger.info("STEP 2: Moving devices via UI automation")
+        logger.info("=" * 50)
+        
+        source_org_name = backup['org_name']
+        target_org_name = self.api.get_org_name(target_org_id)
+        
+        with MerakiUIAutomation(self.username, self.password) as ui:
+            ui.login()
+            
+            # Unclaim from source
+            logger.info(f"Unclaiming devices from {source_org_name}")
+            if not ui.unclaim_devices(source_org_name, device_serials):
+                raise Exception("Failed to unclaim devices")
+            
+            # Wait for unclaim to process
+            logger.info("Waiting 120 seconds for unclaim to process...")
+            time.sleep(120)
+            
+            # Claim in target
+            logger.info(f"Claiming devices in {target_org_name}")
+            if not ui.claim_devices(target_org_name, device_serials):
+                raise Exception("Failed to claim devices")
+        
+        # Wait for claim to process
+        logger.info("Waiting 30 seconds for claim to process...")
+        time.sleep(30)
+        
+        # Step 3: Create network and add devices
+        logger.info("=" * 50)
+        logger.info("STEP 3: Creating network and adding devices")
+        logger.info("=" * 50)
+        
+        # Create network
+        network_name = target_network_name or f"{backup['network_info']['name']}_migrated"
+        network_config = {
+            "name": network_name,
+            "productTypes": backup['network_info'].get('productTypes', ['switch']),
+            "timeZone": backup['network_info'].get('timeZone', 'America/Los_Angeles')
+        }
+        
+        target_network_id = self.api.create_network(target_org_id, network_config)
+        logger.info(f"Created network: {target_network_id}")
+        
+        # Add devices to network
+        if self.api.add_devices_to_network(target_network_id, device_serials):
+            logger.info("Devices added to network")
+        else:
+            logger.warning("Failed to add some devices to network")
+        
+        # Wait for devices to be ready
+        time.sleep(10)
+        
+        # Step 4: Restore settings
+        logger.info("=" * 50)
+        logger.info("STEP 4: Restoring all settings")
+        logger.info("=" * 50)
+        
+        # Create device mapping (same serials in this case)
+        device_mapping = {serial: serial for serial in device_serials}
+        
+        self.restore_tool.restore_all_settings(backup, target_network_id, device_mapping)
+        
+        logger.info("=" * 50)
+        logger.info("MIGRATION COMPLETE!")
+        logger.info(f"Target Network ID: {target_network_id}")
+        logger.info("=" * 50)
+        
+        return target_network_id
 
 
 def main():
-    if len(sys.argv) != 4:
-        print("Usage: python meraki_migration.py SOURCE_ORG_ID SOURCE_NETWORK_ID TARGET_ORG_ID")
-        print("\nExample:")
-        print("  python meraki_migration.py 123456 L_123456789 654321")
-        print("\nNote: This script uses environment variables for credentials:")
-        print("  - MERAKI_API_KEY")
-        print("  - MERAKI_USERNAME")
-        print("  - MERAKI_PASSWORD")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Automated Meraki Migration Tool")
+    parser.add_argument("--api-key", required=True, help="Meraki API key")
+    parser.add_argument("--username", required=True, help="Meraki Dashboard username")
+    parser.add_argument("--password", required=True, help="Meraki Dashboard password")
+    parser.add_argument("--source-org", required=True, help="Source organization ID")
+    parser.add_argument("--source-network", required=True, help="Source network ID")
+    parser.add_argument("--target-org", required=True, help="Target organization ID")
+    parser.add_argument("--target-network-name", help="Target network name (optional)")
     
-    source_org_id = sys.argv[1]
-    source_network_id = sys.argv[2]
-    target_org_id = sys.argv[3]
+    args = parser.parse_args()
     
-    # Get credentials from environment
-    api_key, username, password = get_credentials()
-    
-    logger.info(f"Starting automated migration")
-    logger.info(f"Source: Org {source_org_id}, Network {source_network_id}")
-    logger.info(f"Target: Org {target_org_id}")
+    # Mask password in logs
+    logger.info(f"Starting migration with user: {args.username}")
     
     try:
-        tool = AutomatedMigrationTool(api_key, username, password)
-        target_network_id = tool.execute_migration(
-            source_org_id,
-            source_network_id,
-            target_org_id
+        tool = AutomatedMigrationTool(args.api_key, args.username, args.password)
+        tool.execute_migration(
+            args.source_org,
+            args.source_network,
+            args.target_org,
+            args.target_network_name
         )
-        
-        print(f"\n✓ Migration completed successfully!")
-        print(f"  New network ID: {target_network_id}")
-        print(f"  Check the log file for details: migration_*.log")
-        
     except Exception as e:
         logger.error(f"Migration failed: {e}")
-        print(f"\n✗ Migration failed: {e}")
-        print("  Check the log file for details")
-        sys.exit(1)
+        raise
 
 
 if __name__ == "__main__":
