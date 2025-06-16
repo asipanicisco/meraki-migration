@@ -1,746 +1,512 @@
-### Wait for Devices to Appear
-Monitor and wait for devices to be claimed and added:
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode wait \
-  --backup-file my_switch_backup.json \
-  --target-org TARGET_ORG_ID \
-  --target-network TARGET_NETWORK_ID \
-  --timeout 600  # Wait up to 10 minutes
-```# Meraki Switch Network Migration Tool
+# Meraki Automated Migration Tool Suite
 
-A comprehensive Python script designed specifically for backing up and restoring Meraki switch network configurations between organizations and networks, with helper tools to manage the device migration process.
+A comprehensive suite of tools for automated migration of Meraki switch networks between organizations, including automatic device unclaim/claim via UI automation.
 
-## Operation Modes
+## Overview
 
-The script supports seven operation modes:
+This tool suite provides both manual and fully automated options for migrating Meraki networks:
 
-1. **`backup`** - Save all network and switch configurations
-2. **`restore`** - Apply saved configurations to a new network
-3. **`migrate`** - Combined backup and restore operation
-4. **`inventory`** - Generate detailed device inventory reports
-5. **`verify`** - Check if devices exist in target organization
-6. **`wait`** - Monitor and wait for devices to appear after claiming
-7. **`prepare`** - Update device notes/tags before migration
+### Complete Package Contents
+
+1. **`meraki_migration.py`** - Production-ready migration using environment variables (formerly secure_migration.py)
+2. **`meraki_auto_migration.py`** - Full automated migration with UI automation
+3. **`meraki_migration_dry_run.py`** - Preview tool to see what will be migrated
+4. **`requirements.txt`** - Python dependencies
+
+### Quick Decision Guide
+
+| Scenario | Use This Script |
+|----------|----------------|
+| Production environment with env vars | `meraki_migration.py` |
+| Full automation with inline credentials | `meraki_auto_migration.py` |
+| Preview what will happen (dry run) | `meraki_migration_dry_run.py` |
+
+## What's New: Full Automation
+
+Unlike manual migration scripts, this tool provides:
+
+1. **Automatic Device Movement** - No manual Dashboard interaction needed
+2. **UI Automation** - Handles unclaim/claim process automatically
+3. **Comprehensive Backup** - Captures ALL settings before migration
+4. **Single Command Migration** - Complete migration in one command
+5. **Preview Mode** - See what will happen before running
+
+## Manual vs Automated Comparison
+
+| Task | Manual Process | This Tool |
+|------|---------------|-----------|
+| Backup settings | Run script | ✅ Automatic |
+| Unclaim devices | Login to Dashboard, select, remove | ✅ Automatic |
+| Wait for processing | Set timer manually | ✅ Automatic |
+| Claim devices | Login to Dashboard, enter serials | ✅ Automatic |
+| Create network | Run script or Dashboard | ✅ Automatic |
+| Add devices | Dashboard clicks | ✅ Automatic |
+| Restore settings | Run script | ✅ Automatic |
+| **Total Time** | 30-60 minutes | **5-10 minutes** |
+| **Human Steps** | 10+ manual steps | **1 command** |
 
 ## Features
 
-### Complete Switch Network Backup
+### Complete Automation
+1. **Comprehensive Backup** (via API)
+   - All network-level settings (STP, MTU, ACLs, SNMP, etc.)
+   - All device-level settings (ports, routing, DHCP, management IPs)
+   - All security and monitoring configurations
 
-**Port-Level Settings**:
-- Port configurations (access/trunk modes, VLANs, native VLAN)
-- Port names and tags
-- PoE settings (enabled/disabled, power allocation)
-- Port isolation settings
-- RSTP/STP settings per port
-- Storm control settings
-- Port schedules
-- Link negotiation settings
-- Port mirroring configurations
-- UDLD settings
+2. **Automated Device Movement** (via UI automation)
+   - Automatically unclaims devices from source organization
+   - Waits for processing
+   - Automatically claims devices in target organization
+   - No manual Dashboard interaction required!
 
-**Switch Network-Level Settings**:
-- Switch settings (global configurations)
-- Access policies (802.1X, MAB, policies)
-- Alternate management interface
-- DHCP server policy
-- DSCP to CoS mappings
-- MTU settings
-- Port schedules
-- QoS rules
-- Storm control (global)
-- STP/RSTP settings
-- Multicast routing
-- OSPF routing
-- Warm spare configurations
-- Switch stacks
-- Link aggregations (LACP)
-
-**Organization-Level Settings** (optional):
-- Configuration templates
-- Adaptive policy settings (SGTs, ACLs)
-- SAML roles
-- Policy objects and groups
-- Login security settings
-- Organization-wide SNMP
-
-**General Network Settings**:
-- Network name, timezone, tags
-- Group policies
-- Alert configurations
-- Syslog servers
-- SNMP settings
-- NetFlow collectors
-- Webhooks
-- Traffic analysis settings
-
-### Migration Helper Tools
-
-**Device Preparation** (NEW):
-- Automatically update device notes with order/claim numbers
-- Bulk tag devices for migration tracking
-- Generate claim info templates
-
-**Inventory Report Generation**:
-- Detailed device inventory with serials, models, IPs
-- CSV export for easy reference
-- Device count summaries
-
-**Migration Checklist**:
-- Auto-generated from backup
-- Lists all devices to migrate
-- Step-by-step instructions
-- Extracts claim info from notes/tags
-
-**Device Verification**:
-- Check which devices are in target org
-- Identify missing devices
-- Verify readiness before restore
-
-**Device Monitoring**:
-- Wait for devices to appear after claiming
-- Real-time status updates
-- Configurable timeout
-
-**Device Mapping**:
-- Maps old serials to new ones
-- Handles serial number changes
-- Ensures configs apply to correct switches
+3. **Automatic Network Creation & Restoration** (via API)
+   - Creates new network in target organization
+   - Adds all devices to the network
+   - Restores all backed-up settings
 
 ## Prerequisites
 
+### Python Packages
 ```bash
-pip install requests
+pip install requests selenium
 ```
 
-## Getting Your Meraki API Key
+### Chrome Driver
+Download ChromeDriver matching your Chrome version:
+- Visit: https://chromedriver.chromium.org/
+- Download the version matching your Chrome browser
+- Add to PATH or place in script directory
 
-1. Log into the Meraki Dashboard
-2. Go to Organization > Settings
-3. Check "Enable access to the Cisco Meraki Dashboard API"
-4. Generate your API key
+### Meraki Requirements
+- API key with full admin access
+- Dashboard login credentials (username/password)
+- Organization admin access for both source and target orgs
 
-## Usage
+## Installation
 
-### List Organizations
+1. Install required packages:
 ```bash
-python meraki_migration.py --api-key YOUR_API_KEY --list-orgs
+pip install -r requirements.txt
 ```
 
-### List Networks in an Organization
+2. Download ChromeDriver:
 ```bash
-python meraki_migration.py --api-key YOUR_API_KEY --list-networks ORG_ID
+# On macOS with Homebrew
+brew install chromedriver
+
+# On Ubuntu/Debian
+sudo apt-get install chromium-chromedriver
+
+# Or download manually from https://chromedriver.chromium.org/
 ```
 
-### Backup a Switch Network
+3. Verify ChromeDriver installation:
 ```bash
-# Basic backup (network settings only)
-python meraki_migration.py \
+chromedriver --version
+```
+
+## Quick Start
+
+1. **Preview migration (dry run):**
+   ```bash
+   python meraki_migration_dry_run.py \
+     --api-key YOUR_API_KEY \
+     --source-org SOURCE_ORG_ID \
+     --source-network SOURCE_NETWORK_ID \
+     --target-org TARGET_ORG_ID
+   ```
+
+2. **Run migration (production with env vars):**
+   ```bash
+   # Set environment variables
+   export MERAKI_API_KEY='your-api-key'
+   export MERAKI_USERNAME='your-email@company.com'
+   export MERAKI_PASSWORD='your-password'
+   
+   # Run migration
+   python meraki_migration.py SOURCE_ORG_ID SOURCE_NETWORK_ID TARGET_ORG_ID
+   ```
+
+3. **Run migration (with inline credentials):**
+   ```bash
+   python meraki_auto_migration.py \
+     --api-key YOUR_API_KEY \
+     --username your.email@company.com \
+     --password YOUR_PASSWORD \
+     --source-org SOURCE_ORG_ID \
+     --source-network SOURCE_NETWORK_ID \
+     --target-org TARGET_ORG_ID
+   ```
+
+## Available Scripts
+
+### 1. Production Migration Script (`meraki_migration.py`)
+Uses environment variables for credentials (recommended for production).
+
+```bash
+# Set environment variables
+export MERAKI_API_KEY='your-api-key'
+export MERAKI_USERNAME='your-email@company.com'
+export MERAKI_PASSWORD='your-password'
+
+# Run migration
+python meraki_migration.py SOURCE_ORG_ID SOURCE_NETWORK_ID TARGET_ORG_ID
+```
+
+### 2. Full Automation Script (`meraki_auto_migration.py`)
+Full automated migration with UI automation for device movement.
+
+```bash
+python meraki_auto_migration.py \
   --api-key YOUR_API_KEY \
-  --mode backup \
-  --source-org SOURCE_ORG_ID \
-  --source-network SOURCE_NETWORK_ID \
-  --backup-file my_switch_backup.json
-
-# Include organization-level settings
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode backup \
-  --source-org SOURCE_ORG_ID \
-  --source-network SOURCE_NETWORK_ID \
-  --include-org-settings \
-  --backup-file my_switch_backup.json
-```
-
-## Helper Features for Device Migration
-
-### Generate Inventory Report
-Get a detailed report of all devices before migration:
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode inventory \
-  --source-org SOURCE_ORG_ID \
-  --source-network SOURCE_NETWORK_ID
-```
-
-This creates:
-- JSON report with full device details
-- CSV file for easy reference
-- Summary of device models and counts
-
-### Verify Devices in Target Organization
-Check which devices have been successfully claimed:
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode verify \
-  --backup-file my_switch_backup.json \
-  --target-org TARGET_ORG_ID
-```
-
-### Prepare Devices for Migration
-The prepare mode helps you update device notes with claim information BEFORE migration:
-
-#### Generate Claim Info Template
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode prepare \
-  --source-network SOURCE_NETWORK_ID
-```
-
-This creates a template file with all your devices. Edit it to add order numbers:
-
-```json
-{
-  "Q2XX-XXXX-XXX1": {
-    "name": "Main Switch",
-    "model": "MS120-48LP",
-    "order": "1234-ABCD-5678",
-    "claim": "OR_ENTER_CLAIM_KEY"
-  }
-}
-```
-
-#### Update Device Notes Automatically
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode prepare \
-  --source-network SOURCE_NETWORK_ID \
-  --claim-info claim_info_template.json
-```
-
-This adds order/claim information to each device's notes field.
-
-#### Tag Devices for Migration
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode prepare \
-  --source-network SOURCE_NETWORK_ID \
-  --add-tag "migration-batch-1"
-```
-
-#### Do Both at Once
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode prepare \
-  --source-network SOURCE_NETWORK_ID \
-  --claim-info claim_info.json \
-  --add-tag "migration-ready"
-```
-
-### Generate Migration Checklist
-Create a detailed checklist from your backup:
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --generate-checklist \
-  --backup-file my_switch_backup.json
-```
-
-This creates:
-- JSON checklist with device details
-- Text checklist for printing/reference
-- Step-by-step migration instructions
-- Claim information (if found in notes/tags)
-
-### Restore to a New Network
-```bash
-# Without device mapping (network settings only)
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode restore \
-  --backup-file my_switch_backup.json \
-  --target-org TARGET_ORG_ID
-
-# With device mapping (includes port configurations)
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode restore \
-  --backup-file my_switch_backup.json \
-  --target-org TARGET_ORG_ID \
-  --device-mapping my_switch_backup_device_mapping.json
-```
-
-### Direct Migration
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode migrate \
+  --username your.email@company.com \
+  --password YOUR_PASSWORD \
   --source-org SOURCE_ORG_ID \
   --source-network SOURCE_NETWORK_ID \
   --target-org TARGET_ORG_ID \
-  --include-org-settings
+  --target-network-name "Optional Custom Name"
 ```
 
-## Recommended Migration Workflow
+### 3. Migration Preview Script (`meraki_migration_dry_run.py`)
+Preview what will be migrated without making any changes.
 
-### Step 1: Create Inventory Report
 ```bash
-python meraki_migration.py \
+python meraki_migration_dry_run.py \
   --api-key YOUR_API_KEY \
-  --mode inventory \
-  --source-org SOURCE_ORG_ID \
-  --source-network SOURCE_NETWORK_ID
-```
-
-### Step 2: Prepare Devices (Add Claim Info to Notes)
-```bash
-# Generate template
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode prepare \
-  --source-network SOURCE_NETWORK_ID
-
-# Edit the generated claim_info_template_*.json file with order numbers
-
-# Apply the claim information to device notes
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode prepare \
-  --source-network SOURCE_NETWORK_ID \
-  --claim-info claim_info_template_*.json \
-  --add-tag "migration-ready"
-```
-
-### Step 3: Backup Network Configuration
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode backup \
   --source-org SOURCE_ORG_ID \
   --source-network SOURCE_NETWORK_ID \
-  --include-org-settings \
-  --backup-file switch_migration.json
-```
-
-This automatically generates:
-- `switch_migration.json` - Complete backup
-- `switch_migration_device_mapping.json` - Device mapping template
-- `switch_migration_checklist.json` - Migration checklist (with claim info from notes!)
-- `switch_migration_checklist.txt` - Printable checklist
-
-### Step 4: Review Migration Checklist
-Open the text checklist to see:
-- List of all devices to migrate
-- Serial numbers and models
-- Any claim information found
-- Step-by-step instructions
-
-### Step 4: Release Devices from Source Org
-1. Log into source organization Dashboard
-2. Go to Organization > Inventory
-3. Select all switches from your checklist
-4. Click "Remove from organization"
-
-### Step 5: Claim Devices in Target Org
-1. Log into target organization Dashboard
-2. Go to Organization > Inventory > Claim
-3. Enter serial numbers or order numbers
-4. Claim all devices
-
-### Step 6: Create Target Network (if needed)
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode restore \
-  --backup-file switch_migration.json \
-  --target-org TARGET_ORG_ID
-```
-Note: This creates the network but won't restore device configs yet.
-
-### Step 7: Add Devices to Network
-In the Dashboard:
-1. Go to your new network
-2. Navigate to Switches > Add switches
-3. Select all claimed switches
-4. Add to network
-
-### Step 8: Verify All Devices Are Ready
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode verify \
-  --backup-file switch_migration.json \
-  --target-org TARGET_ORG_ID
-```
-
-Or wait for them to appear:
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode wait \
-  --backup-file switch_migration.json \
   --target-org TARGET_ORG_ID \
-  --target-network TARGET_NETWORK_ID
-```
-
-### Step 9: Update Device Mapping (if needed)
-If any serial numbers changed during the claim process:
-1. Edit `switch_migration_device_mapping.json`
-2. Replace "ENTER_NEW_SERIAL_HERE" with actual new serials
-
-### Step 10: Restore Full Configuration
-```bash
-python meraki_migration.py \
-  --api-key YOUR_API_KEY \
-  --mode restore \
-  --backup-file switch_migration.json \
-  --target-org TARGET_ORG_ID \
-  --target-network TARGET_NETWORK_ID \
-  --device-mapping switch_migration_device_mapping.json
+  --save-preview preview.json
 ```
 
 ## What Gets Migrated
 
-### ✅ Switch-Specific Settings
+### Network-Level Settings
+- **STP Configuration**: Bridge priorities, RSTP settings
+- **MTU Settings**: Custom MTU values
+- **Access Control Lists (ACLs)**: All configured ACLs
+- **Access Policies**: 802.1X, MAB, and guest policies
+- **SNMP v2/v3**: Community strings, users, trap receivers
+- **QoS Rules**: Traffic prioritization
+- **DHCP Settings**: Server policies, options
+- **Port Schedules**: Time-based port control
+- **Storm Control**: Broadcast/multicast limits
+- **Link Aggregations**: LACP configurations
+- **Routing**: OSPF, multicast, static routes
 
-**Port Configurations**:
-- Access/trunk mode settings
-- VLAN assignments (access VLAN, allowed VLANs, native VLAN)
-- Voice VLAN settings
-- PoE enabled/disabled and power limits
-- Port isolation
-- STP guard settings (BPDU, root, loop guard)
-- Storm control percentages
-- Port schedules
-- Speed/duplex settings
-- UDLD settings
+### Device-Level Settings
+- **All Port Configurations**:
+  - Access/trunk modes
+  - VLAN assignments
+  - PoE settings
+  - Port names and descriptions
+  - STP guard settings
+  - Port isolation
+  - Speed/duplex
+  - Port schedules
+- **Management Interface**:
+  - Static IP or DHCP
+  - VLAN assignment
+  - DNS servers
+- **Layer 3 Interfaces**: (if applicable)
+  - Interface IPs
+  - VLAN interfaces
+  - Static routes
+- **DHCP Server**: Configured subnets and options
 
-**Network Settings**:
-- Global switch settings
-- RADIUS/802.1X configurations
-- Access control lists
-- DHCP server policies
-- QoS and DSCP mappings
-- MTU configurations
-- STP priorities and settings
-- Multicast and IGMP snooping
-- Port mirroring
-- Link aggregations
+### Monitoring & Alerts
+- Syslog servers
+- NetFlow collectors
+- Alert settings
+- SNMP trap receivers
 
-**Organization Settings** (when included):
-- Adaptive policy configurations
-- Configuration templates
-- Policy objects
-- SAML configurations
+## Migration Process
 
-### ❌ Not Migrated
-- Switch hardware (must be reclaimed)
-- Historical data and analytics
-- Client-specific settings
-- Current port status/statistics
-- MAC address tables
-- Active DHCP leases
-- Spanning tree topology state
+The script performs these steps automatically:
 
-## Backup File Structure
+1. **Backup Phase** (API)
+   - Connects to source network
+   - Downloads all configurations
+   - Saves backup to JSON file
 
-```json
-{
-  "timestamp": "2024-01-01T12:00:00",
-  "org_id": "source_org_id",
-  "network_id": "source_network_id",
-  "network_info": { 
-    "name": "Switch Network",
-    "productTypes": ["switch"],
-    ...
-  },
-  "devices": [
-    {
-      "serial": "Q2XX-XXXX-XXXX",
-      "name": "Main Switch",
-      "model": "MS120-48LP",
-      "configurations": {
-        "switchPorts": [
-          {
-            "portId": "1",
-            "name": "Uplink",
-            "type": "trunk",
-            "vlan": 1,
-            "allowedVlans": "all",
-            "poeEnabled": false,
-            ...
-          }
-        ],
-        "management": { ... }
-      }
-    }
-  ],
-  "switch_settings": {
-    "settings": { ... },
-    "accessPolicies": [ ... ],
-    "qosRules": [ ... ],
-    ...
-  },
-  "settings": {
-    "alerts": { ... },
-    "groupPolicies": [ ... ],
-    ...
-  },
-  "org_settings": {
-    "adaptivePolicy": { ... },
-    "configTemplates": [ ... ],
-    ...
-  }
-}
+2. **Device Movement** (UI Automation)
+   - Logs into Meraki Dashboard
+   - Navigates to source organization
+   - Selects and unclaims all devices
+   - Waits 120 seconds for processing
+   - Switches to target organization
+   - Claims all devices using serials
+
+3. **Network Setup** (API)
+   - Creates new network in target org
+   - Adds all claimed devices to network
+
+4. **Restoration Phase** (API)
+   - Applies all network-level settings
+   - Configures each device individually
+   - Restores all port configurations
+
+## ⚠️ Important Warnings
+
+### When to Use This Tool
+- ✅ Moving networks between your own organizations
+- ✅ Lab or test environments
+- ✅ Planned maintenance windows
+- ✅ When you have full admin access to both orgs
+
+### When NOT to Use
+- ❌ Production networks during business hours
+- ❌ Without proper change control approval
+- ❌ If you're not certain about the target organization
+- ❌ Without testing in a lab first
+
+### Before Running
+1. **Always run preview mode first** to see what will be migrated
+2. **Test with a small network** before migrating large deployments
+3. **Schedule a maintenance window** - devices will be briefly offline
+4. **Have a rollback plan** - keep your backup files
+
+## Security
+
+### Best Practices
+- **Credentials**: Use environment variables in production (`meraki_migration.py`)
+- **API Key**: Keep your API key secure and never commit to version control
+- **Backup Files**: Contain sensitive network configurations - store securely
+- **Access Control**: Limit who can run these scripts
+
+### Using Environment Variables (Recommended)
+```bash
+# Set once in your shell profile or CI/CD system
+export MERAKI_API_KEY='your-api-key'
+export MERAKI_USERNAME='your-email@company.com'
+export MERAKI_PASSWORD='your-password'
+
+# Then run without exposing credentials
+python meraki_migration.py SOURCE_ORG SOURCE_NET TARGET_ORG
 ```
 
-## Claim Info Template Format
+## Advanced Usage
 
-When using prepare mode, the claim info JSON should follow this format:
-
-```json
-{
-  "Q2XX-XXXX-OLD1": {
-    "name": "Main Switch",
-    "model": "MS120-48LP",
-    "order": "1234-ABCD-5678",
-    "claim": "XXXX-XXXX-XXXX"
-  },
-  "Q2XX-XXXX-OLD2": "Order: 9876-ZYXW-4321"
-}
+### Running Headless (No Browser Window)
+Edit `meraki_auto_migration.py` and change:
+```python
+with MerakiUIAutomation(self.username, self.password, headless=True) as ui:
 ```
 
-You can use either:
-- A simple string value: `"serial": "Order: 1234-ABCD-5678"`
-- An object with fields: `"serial": {"order": "1234-ABCD-5678"}`
+### Custom Wait Times
+Modify sleep durations in the script:
+```python
+# After unclaim (default 120 seconds)
+time.sleep(180)  # Increase to 3 minutes
 
-## Device Mapping File
-
-The device mapping file helps restore port configurations to the correct switches:
-
-```json
-{
-  "Q2XX-XXXX-OLD1": {
-    "old_serial": "Q2XX-XXXX-OLD1",
-    "old_name": "Main Switch",
-    "old_model": "MS120-48LP",
-    "new_serial": "Q2XX-XXXX-NEW1"
-  },
-  "Q2XX-XXXX-OLD2": {
-    "old_serial": "Q2XX-XXXX-OLD2",
-    "old_name": "Access Switch 1",
-    "old_model": "MS120-24P",
-    "new_serial": "Q2XX-XXXX-NEW2"
-  }
-}
+# After claim (default 30 seconds)  
+time.sleep(60)   # Increase to 1 minute
 ```
+
+### Using with CI/CD
+```yaml
+# Example GitHub Actions
+env:
+  MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
+  MERAKI_USERNAME: ${{ secrets.MERAKI_USERNAME }}
+  MERAKI_PASSWORD: ${{ secrets.MERAKI_PASSWORD }}
+
+steps:
+  - name: Run Migration
+    run: python meraki_migration.py $SOURCE_ORG $SOURCE_NET $TARGET_ORG
+```
+
+### Batch Migrations
+Create a script to migrate multiple networks:
+```python
+networks = [
+    ("L_1234", "Network 1"),
+    ("L_5678", "Network 2"),
+]
+
+for network_id, name in networks:
+    tool.execute_migration(source_org, network_id, target_org, name)
+    time.sleep(300)  # Wait between migrations
+```
+
+## Complete Workflow Example
+
+```bash
+# 1. Preview what will happen
+python meraki_migration_dry_run.py \
+  --api-key YOUR_KEY \
+  --source-org 123456 \
+  --source-network L_123456789 \
+  --target-org 654321 \
+  --save-preview migration_plan.json
+
+# 2. Review the preview
+cat migration_plan.json
+
+# 3. Set environment variables (for production)
+export MERAKI_API_KEY='your-key'
+export MERAKI_USERNAME='admin@company.com'
+export MERAKI_PASSWORD='your-password'
+
+# 4. Run the migration
+python meraki_migration.py 123456 L_123456789 654321
+
+# 5. Verify completion in Dashboard
+```
+
+## Timing
+
+- The script waits 120 seconds after unclaiming devices (required by Meraki)
+- Additional waits ensure operations complete successfully
+- Total migration time: ~5-10 minutes depending on network size
+
+## Browser Automation
+
+- The script uses Chrome in visible mode by default
+- You can run headless by modifying the script
+- Ensure your Chrome browser is up to date
+- Don't interact with the browser while script is running
+
+## Limitations
+
+- Devices must be online and accessible
+- Some organization-specific settings may need manual configuration
+- Historical data and analytics are not migrated
+- Client-specific settings are not preserved
 
 ## Troubleshooting
 
-### Common Issues
-
-**Port Configuration Not Restoring**:
-- Ensure switches are claimed and added to the network
-- Verify device mapping file has correct serial numbers
-- Check that switch models are compatible
-
-**Access Policy Errors**:
-- RADIUS servers must be configured first
-- Ensure authentication settings match capabilities
-
-**VLAN Issues**:
-- VLANs referenced in port configs must exist
-- Check VLAN ID conflicts with existing networks
-
-**Stack Configuration**:
-- Stack members must be physically connected
-- All stack members must be in the network
-
-## Best Practices
-
-1. **Test First**: Always test with a small network before migrating production
-2. **Verify Models**: Ensure target switches support all features being migrated
-3. **Plan Downtime**: Switch migration requires physical reclaiming
-4. **Document Mapping**: Keep clear records of old-to-new serial mappings
-5. **Backup Regularly**: Keep backups before making changes
-
-### Pro Tip: Automatically Store Claim Information
-Before migration, use the prepare mode to automatically add order numbers or claim keys to device notes:
-
-1. Generate the template: `--mode prepare --source-network NETWORK_ID`
-2. Edit the template with your order numbers
-3. Apply it: `--mode prepare --source-network NETWORK_ID --claim-info your_file.json`
-
-The script will automatically extract this information during backup!
-
-## Migration Checklist Details
-
-The auto-generated migration checklist includes:
-
-1. **Device Information**:
-   - Serial numbers
-   - Device names and models
-   - MAC addresses
-   - Port counts
-   - Tags and notes
-   - **Claim information** (automatically extracted from device notes)
-
-2. **Migration Steps**:
-   - Clear instructions for removing devices
-   - How to claim in new organization
-   - Network setup steps
-   - Configuration restore process
-
-3. **Claim Information Sources**:
-   The script extracts claim info from device notes using patterns like:
-   - `Order: 1234-ABCD-5678`
-   - `order#1234-ABCD-5678`
-   - `claim: XXXX-XXXX-XXXX`
-   - `Claim-XXXX-XXXX-XXXX`
-
-   Use the **prepare mode** to automatically add this information before migration!
-
-## Security Considerations
-
-1. **API Keys**: Never commit to version control
-2. **Backup Files**: Contain sensitive network configurations
-3. **Access Control**: Limit who can access backup files
-4. **Encryption**: Consider encrypting backup files at rest
-
-## Example Outputs
-
-### Prepare Mode - Update Device Notes
+### ChromeDriver Issues
 ```
-Preparing devices for migration in network L_123456789012345678
+Error: 'chromedriver' executable needs to be in PATH
+```
+Solution: Ensure ChromeDriver is installed and in your system PATH
 
-✓ Updated notes for 12/12 devices
-✓ Tagged 12/12 devices with 'migration-ready'
+### Login Failures
+- Verify credentials are correct
+- Check if 2FA is enabled (may need to disable temporarily)
+- Ensure no CAPTCHA is required
+
+### Device Claim Failures
+- Devices may still be registered to previous organization
+- Wait longer between unclaim and claim (increase sleep time)
+- Check if devices are online
+
+### API Rate Limits
+- The script handles rate limiting automatically
+- If issues persist, add longer delays between operations
+
+## Example Output
+
+```
+2024-01-15 10:30:00 - INFO - Starting migration with user: admin@company.com
+2024-01-15 10:30:00 - INFO - ==================================================
+2024-01-15 10:30:00 - INFO - STEP 1: Backing up all settings
+2024-01-15 10:30:00 - INFO - ==================================================
+2024-01-15 10:30:01 - INFO - Starting comprehensive backup for network L_123456789
+2024-01-15 10:30:02 - INFO - Found 12 devices
+2024-01-15 10:30:03 - INFO - Backed up switch stp
+2024-01-15 10:30:04 - INFO - Backed up switch mtu
+2024-01-15 10:30:15 - INFO - Backed up 48 ports for Q2XX-XXXX-XXXX
+2024-01-15 10:30:25 - INFO - Backup saved to migration_backup_L_123456789_20240115_103000.json
+2024-01-15 10:30:25 - INFO - ==================================================
+2024-01-15 10:30:25 - INFO - STEP 2: Moving devices via UI automation
+2024-01-15 10:30:25 - INFO - ==================================================
+2024-01-15 10:30:26 - INFO - Chrome driver initialized
+2024-01-15 10:30:28 - INFO - Successfully logged in
+2024-01-15 10:30:35 - INFO - Successfully unclaimed 12 devices
+2024-01-15 10:30:35 - INFO - Waiting 120 seconds for unclaim to process...
+2024-01-15 10:32:35 - INFO - Successfully claimed 12 devices
+2024-01-15 10:33:05 - INFO - ==================================================
+2024-01-15 10:33:05 - INFO - STEP 3: Creating network and adding devices
+2024-01-15 10:33:05 - INFO - ==================================================
+2024-01-15 10:33:06 - INFO - Created network: L_987654321
+2024-01-15 10:33:07 - INFO - Devices added to network
+2024-01-15 10:33:17 - INFO - ==================================================
+2024-01-15 10:33:17 - INFO - STEP 4: Restoring all settings
+2024-01-15 10:33:17 - INFO - ==================================================
+2024-01-15 10:33:18 - INFO - Restored STP settings
+2024-01-15 10:33:19 - INFO - Restored MTU settings
+2024-01-15 10:33:45 - INFO - ==================================================
+2024-01-15 10:33:45 - INFO - MIGRATION COMPLETE!
+2024-01-15 10:33:45 - INFO - Target Network ID: L_987654321
+2024-01-15 10:33:45 - INFO - ==================================================
 ```
 
-### Prepare Mode - Generate Template
-```
-✓ Generated claim info template: claim_info_template_L_123456789012345678.json
+## Backup File Structure
 
-To use this template:
-1. Edit the file and add order numbers or claim keys
-2. Run: python meraki_migration.py --api-key KEY --mode prepare \
-        --source-network L_123456789012345678 --claim-info claim_info_template_L_123456789012345678.json
-```
+The script creates a comprehensive backup file containing:
 
-### Inventory Report
-```
-✓ Inventory report generated!
-  - JSON report: inventory_L_123456_20240115_143022.json
-  - CSV report: inventory_L_123456_20240115_143022.csv
-
-Summary:
-  - Total devices: 12
-  - Device models:
-    - MS120-48LP: 8
-    - MS120-24P: 3
-    - MS250-48FP: 1
-```
-
-### Backup with Auto-Generated Files
-```
-✓ Backup complete!
-  - Backup file: meraki_backup_L_123456_20240115_143022.json
-  - Device mapping: meraki_backup_L_123456_20240115_143022_device_mapping.json
-  - Migration checklist: meraki_backup_L_123456_20240115_143022_checklist.json
-  - Text checklist: meraki_backup_L_123456_20240115_143022_checklist.txt
-
-Total devices to migrate: 12
-
-Next steps:
-1. Review the migration checklist
-2. Remove devices from source organization
-3. Claim devices in target organization
-4. Update device mapping if serials changed
-5. Run restore with --device-mapping
+```json
+{
+  "timestamp": "2024-01-15T10:30:00",
+  "org_id": "123456",
+  "org_name": "Source Organization",
+  "network_id": "L_123456789",
+  "network_info": {...},
+  "devices": [...],
+  "network_settings": {
+    "switch": {
+      "stp": {...},
+      "mtu": {...},
+      "accessPolicies": [...],
+      ...
+    },
+    "routing": {...},
+    "security": {...},
+    "monitoring": {...}
+  },
+  "device_settings": {
+    "Q2XX-XXXX-XXXX": {
+      "ports": [...],
+      "management": {...},
+      "routing": {...},
+      "dhcp": {...}
+    }
+  }
+}
 ```
 
-### Device Verification
-```
-Verifying devices in target organization...
+## Frequently Asked Questions
 
-✓ Found in target org (10):
-  - Q2XX-XXXX-XXX1 (Main Switch)
-  - Q2XX-XXXX-XXX2 (Access Switch 1)
-  - Q2XX-XXXX-XXX3 (Access Switch 2)
-  ...
+### Q: How long will devices be offline?
+**A:** Typically 3-5 minutes during the unclaim/claim process. The 120-second wait is mandatory.
 
-✗ Missing from target org (2):
-  - Q2XX-XXXX-XXX11 (IDF Switch 1)
-  - Q2XX-XXXX-XXX12 (IDF Switch 2)
-```
+### Q: Can I migrate between different organization types?
+**A:** Yes, but ensure both organizations have appropriate licensing for the devices.
 
-### Device Wait Monitoring
-```
-Waiting for 12 devices to appear in target organization...
-Timeout: 300 seconds
-Press Ctrl+C to stop waiting
+### Q: What if the migration fails midway?
+**A:** The backup file contains all settings. You can manually reclaim devices and run the restore portion.
 
-✓ Device Q2XX-XXXX-XXX1 found in organization inventory
-✓ Device Q2XX-XXXX-XXX2 found in organization inventory
-Still waiting for 10 devices: Q2XX-XXXX-XXX3, Q2XX-XXXX-XXX4, ...
-✓ Device Q2XX-XXXX-XXX3 found in organization inventory
-✓ Device Q2XX-XXXX-XXX3 added to network
-...
-All devices successfully added to network!
+### Q: Can I use this with 2FA enabled?
+**A:** You may need to temporarily disable 2FA or use an admin account without 2FA for automation.
 
-✓ All devices are ready for configuration restore!
-  Network ID: L_123456789012345678
-  
-You can now run restore with --device-mapping
-```
+### Q: Will client devices need to reconnect?
+**A:** Yes, wireless clients will need to reconnect. Wired clients may experience a brief disconnection.
 
-### Device Wait Monitoring
-```
-Waiting for 12 devices to appear in target organization...
-Timeout: 300 seconds
-Press Ctrl+C to stop waiting
+### Q: Can I modify what gets migrated?
+**A:** Yes, you can edit the backup JSON file before restoration to exclude certain settings.
 
-✓ Device Q2XX-XXXX-XXX1 found in organization inventory
-✓ Device Q2XX-XXXX-XXX2 found in organization inventory
-Still waiting for 10 devices: Q2XX-XXXX-XXX3, Q2XX-XXXX-XXX4, ...
-✓ Device Q2XX-XXXX-XXX3 found in organization inventory
-✓ Device Q2XX-XXXX-XXX3 added to network
-...
-All devices successfully added to network!
+### Q: Does this work with all switch models?
+**A:** Yes, it supports all MS series switches. The script detects model types automatically.
 
-✓ All devices are ready!
-  All devices added to network: L_123456789012345678
-  
-You can now run restore with --device-mapping
-```
-
-## Generated Files Summary
-
-When you run a backup, the script automatically creates these files:
-
-| File | Purpose | Contents |
-|------|---------|----------|
-| `*_backup.json` | Main backup file | All network/device configurations |
-| `*_device_mapping.json` | Serial number mapping | Maps old serials to new ones |
-| `*_checklist.json` | Migration checklist (JSON) | Structured migration data |
-| `*_checklist.txt` | Migration checklist (text) | Human-readable instructions |
-
-When you run inventory mode:
-
-| File | Purpose | Contents |
-|------|---------|----------|
-| `*_inventory.json` | Detailed inventory | Full device details, IPs, uplinks |
-| `*_inventory.csv` | Simple inventory | Serial, name, model, MAC for reference |
-
-All files include timestamps in their names to prevent overwrites.
+### Q: What about switch stacks?
+**A:** Stack configurations are preserved, but ensure all stack members are migrated together.
 
 ## Support
 
-For issues with:
-- The script: Check log files in the same directory
-- Meraki API: [Meraki API Documentation](https://developer.cisco.com/meraki/api-v1/)
-- Switch features: Contact Meraki support
+For issues:
+- Check the log file generated in the same directory
+- Ensure all prerequisites are met
+- Verify network connectivity
+- Check Meraki API status: https://status.meraki.com/
 
-## Version Requirements
+### Support Resources
+- **Meraki API**: https://developer.cisco.com/meraki/api-v1/
+- **ChromeDriver**: https://chromedriver.chromium.org/
+- **Selenium Docs**: https://selenium-python.readthedocs.io/
+- **Meraki Community**: https://community.meraki.com/
 
-- Meraki API v1
-- Python 3.6+
-- Active Meraki organization administrator access
-- Appropriate licensing for all features being migrated
+## License
+
+These scripts are provided as-is for network administrators to migrate their own Meraki networks. Always test thoroughly before using in production.
