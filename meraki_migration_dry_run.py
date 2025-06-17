@@ -7,6 +7,7 @@ Preview what will be migrated without making any changes
 import json
 import argparse
 from datetime import datetime
+from typing import Dict
 from meraki_auto_migration import MerakiAPIClient, ComprehensiveBackup
 import logging
 
