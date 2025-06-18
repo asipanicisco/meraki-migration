@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Meraki Network Migration Tool with UI Automation
-Automatically migrates devices between organizations using API and UI automation
+Enhanced Chrome session management to prevent conflicts
 """
 
 import json
@@ -22,6 +22,8 @@ import tempfile
 import shutil
 import uuid
 import subprocess
+import psutil
+import signal
 
 # Configure logging
 logging.basicConfig(
@@ -402,66 +404,136 @@ class MerakiUIAutomation:
         
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.driver:
-            self.driver.quit()
-        if self.temp_dir:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+        if self.temp_dir and os.path.exists(self.temp_dir):
             try:
                 shutil.rmtree(self.temp_dir)
             except Exception:
                 pass
     
     def kill_chrome_processes(self):
-        """Kill any existing Chrome/ChromeDriver processes"""
+        """Kill any existing Chrome/ChromeDriver processes using psutil for better cross-platform support"""
         try:
-            # More aggressive cleanup
-            chrome_processes = [
-                'chrome', 'chromium', 'google-chrome', 'google-chrome-stable',
-                'chromedriver', 'chromium-browser'
+            killed_count = 0
+            chrome_names = ['chrome', 'chromium', 'google-chrome', 'chromedriver', 'Chrome', 'Google Chrome']
+            
+            # Use psutil for more reliable process killing
+            try:
+                import psutil
+                for proc in psutil.process_iter(['pid', 'name']):
+                    try:
+                        process_name = proc.info['name'].lower()
+                        for chrome_name in chrome_names:
+                            if chrome_name.lower() in process_name:
+                                proc.kill()
+                                killed_count += 1
+                                break
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            except ImportError:
+                # Fallback to system commands if psutil not available
+                for process in chrome_names:
+                    try:
+                        subprocess.run(['pkill', '-9', '-f', process], 
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    except Exception:
+                        pass
+            
+            # Clean up Chrome temp directories
+            import glob
+            temp_patterns = [
+                '/tmp/.com.google.Chrome.*',
+                '/tmp/chrome*',
+                '/tmp/meraki_chrome*',
+                '/tmp/.org.chromium.*',
+                os.path.join(tempfile.gettempdir(), '.com.google.Chrome.*'),
+                os.path.join(tempfile.gettempdir(), 'chrome*'),
+                os.path.join(tempfile.gettempdir(), 'meraki_chrome*')
             ]
             
-            for process in chrome_processes:
-                subprocess.run(['pkill', '-9', '-f', process], capture_output=True)
+            for pattern in temp_patterns:
+                for temp_dir in glob.glob(pattern):
+                    try:
+                        if os.path.isdir(temp_dir):
+                            shutil.rmtree(temp_dir)
+                    except Exception:
+                        pass
             
-            # Also try killall
-            subprocess.run(['killall', '-9', 'chrome'], capture_output=True, stderr=subprocess.DEVNULL)
-            subprocess.run(['killall', '-9', 'chromedriver'], capture_output=True, stderr=subprocess.DEVNULL)
-            
-            # Clean up any stale Chrome directories
-            import glob
-            temp_dirs = glob.glob('/tmp/.com.google.Chrome.*')
-            temp_dirs.extend(glob.glob('/tmp/chrome*'))
-            temp_dirs.extend(glob.glob('/tmp/meraki_chrome*'))
-            
-            for temp_dir in temp_dirs:
-                try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-            
-            time.sleep(3)  # Give processes time to die
-            logger.info("Cleaned up existing Chrome processes and directories")
+            if killed_count > 0:
+                logger.info(f"Killed {killed_count} Chrome-related processes")
+                time.sleep(3)  # Give processes time to die
             
         except Exception as e:
-            logger.warning(f"Could not kill Chrome processes: {e}")
+            logger.warning(f"Error during Chrome cleanup: {e}")
     
     def setup_driver(self):
-        """Setup Chrome driver with options"""
+        """Setup Chrome driver with enhanced options to prevent session conflicts"""
         # Kill any existing Chrome processes first
         self.kill_chrome_processes()
         
+        # Wait a bit to ensure everything is cleaned up
+        time.sleep(2)
+        
         options = webdriver.ChromeOptions()
         
-        # Create unique user data directory to avoid conflicts
-        self.temp_dir = os.path.join(tempfile.gettempdir(), f'meraki_chrome_{uuid.uuid4()}')
-        os.makedirs(self.temp_dir, exist_ok=True)
+        # Create truly unique user data directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        random_id = str(uuid.uuid4())[:8]
+        self.temp_dir = os.path.join(
+            tempfile.gettempdir(), 
+            f'meraki_chrome_{timestamp}_{random_id}'
+        )
         
-        # Essential options
+        # Ensure the directory doesn't exist
+        if os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+        os.makedirs(self.temp_dir, mode=0o700)  # Create with restricted permissions
+        
+        logger.info(f"Using temp directory: {self.temp_dir}")
+        
+        # Core options for stability
         options.add_argument(f'--user-data-dir={self.temp_dir}')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
-        options.add_argument('--disable-software-rasterizer')
-        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-web-security')
+        options.add_argument('--disable-features=VizDisplayCompositor')
         options.add_argument('--disable-setuid-sandbox')
+        
+        # Additional isolation options
+        options.add_argument('--disable-background-networking')
+        options.add_argument('--disable-background-timer-throttling')
+        options.add_argument('--disable-backgrounding-occluded-windows')
+        options.add_argument('--disable-breakpad')
+        options.add_argument('--disable-client-side-phishing-detection')
+        options.add_argument('--disable-component-extensions-with-background-pages')
+        options.add_argument('--disable-default-apps')
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-features=TranslateUI')
+        options.add_argument('--disable-hang-monitor')
+        options.add_argument('--disable-ipc-flooding-protection')
+        options.add_argument('--disable-popup-blocking')
+        options.add_argument('--disable-prompt-on-repost')
+        options.add_argument('--disable-renderer-backgrounding')
+        options.add_argument('--disable-sync')
+        options.add_argument('--force-color-profile=srgb')
+        options.add_argument('--metrics-recording-only')
+        options.add_argument('--no-first-run')
+        options.add_argument('--safebrowsing-disable-auto-update')
+        options.add_argument('--enable-automation')
+        options.add_argument('--password-store=basic')
+        options.add_argument('--use-mock-keychain')
+        
+        # Memory optimization
+        options.add_argument('--memory-pressure-off')
+        options.add_argument('--max_old_space_size=4096')
+        
+        # Unique port for remote debugging to avoid conflicts
+        debug_port = 9222 + int(time.time()) % 1000
+        options.add_argument(f'--remote-debugging-port={debug_port}')
         
         # Headless mode if requested
         if self.headless:
@@ -471,72 +543,243 @@ class MerakiUIAutomation:
             options.add_argument('--window-size=1920,1080')
             options.add_argument('--start-maximized')
         
-        # Additional stability options
-        options.add_argument('--remote-debugging-port=9222')
-        options.add_argument('--disable-blink-features=AutomationControlled')
+        # Disable automation detection
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
+        options.add_argument('--disable-blink-features=AutomationControlled')
         
-        logger.info(f"Using temp directory: {self.temp_dir}")
+        # Preferences to disable various features
+        prefs = {
+            "credentials_enable_service": False,
+            "profile.password_manager_enabled": False,
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.default_content_settings.popups": 0,
+            "profile.managed_default_content_settings.images": 1,
+        }
+        options.add_experimental_option("prefs", prefs)
         
-        # Try to find chromedriver in common locations
+        # Try to find chromedriver
         chromedriver_paths = [
             '/usr/bin/chromedriver',
             '/usr/local/bin/chromedriver',
+            '/opt/chrome/chromedriver',
             'chromedriver',
-            './chromedriver'
+            './chromedriver',
+            shutil.which('chromedriver')
         ]
         
         chromedriver_path = None
         for path in chromedriver_paths:
-            if os.path.exists(path) or shutil.which(path):
+            if path and os.path.exists(path):
                 chromedriver_path = path
                 logger.info(f"Found ChromeDriver at: {chromedriver_path}")
                 break
         
-        try:
-            if chromedriver_path:
-                from selenium.webdriver.chrome.service import Service
-                service = Service(chromedriver_path)
-                self.driver = webdriver.Chrome(service=service, options=options)
-            else:
-                self.driver = webdriver.Chrome(options=options)
+        # Initialize driver with retry logic
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                if chromedriver_path:
+                    from selenium.webdriver.chrome.service import Service
+                    service = Service(chromedriver_path)
+                    service.log_path = os.path.join(self.temp_dir, 'chromedriver.log')
+                    self.driver = webdriver.Chrome(service=service, options=options)
+                else:
+                    self.driver = webdriver.Chrome(options=options)
                 
-            self.wait = WebDriverWait(self.driver, 20)
-            logger.info("Chrome driver initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize Chrome driver: {e}")
-            logger.error("Make sure Chrome and ChromeDriver are installed:")
-            logger.error("  sudo apt-get install google-chrome-stable chromium-chromedriver")
-            raise
+                self.wait = WebDriverWait(self.driver, 20)
+                logger.info("Chrome driver initialized successfully")
+                break
+                
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < max_attempts - 1:
+                    logger.info("Cleaning up and retrying...")
+                    self.kill_chrome_processes()
+                    time.sleep(5)
+                else:
+                    logger.error("Failed to initialize Chrome driver after all attempts")
+                    logger.error("Make sure Chrome and ChromeDriver are installed:")
+                    logger.error("  sudo apt-get update")
+                    logger.error("  sudo apt-get install -y google-chrome-stable chromium-chromedriver")
+                    raise
     
     def login(self):
         """Login to Meraki Dashboard"""
         logger.info("Logging into Meraki Dashboard")
         self.driver.get("https://dashboard.meraki.com")
         
-        # Enter username
-        username_field = self.wait.until(
-            EC.presence_of_element_located((By.ID, "email"))
-        )
+        # Enter username - try multiple selectors
+        username_field = None
+        username_selectors = [
+            (By.ID, "email"),
+            (By.ID, "Email"),  # Case variation
+            (By.NAME, "email"),
+            (By.NAME, "Email"),
+            (By.CSS_SELECTOR, "input[type='email']"),
+            (By.CSS_SELECTOR, "input[type='text'][name='email' i]")  # Case-insensitive CSS
+        ]
+        
+        for selector_type, selector_value in username_selectors:
+            try:
+                username_field = self.wait.until(
+                    EC.presence_of_element_located((selector_type, selector_value))
+                )
+                logger.debug(f"Found username field with {selector_type}='{selector_value}'")
+                break
+            except TimeoutException:
+                continue
+        
+        if not username_field:
+            raise Exception("Could not find username/email field")
+        
         username_field.send_keys(self.username)
         username_field.send_keys(Keys.RETURN)
         
-        # Wait and enter password
+        # Wait and enter password - try multiple selectors including case variations
         time.sleep(2)
-        password_field = self.wait.until(
-            EC.presence_of_element_located((By.ID, "password"))
-        )
+        password_field = None
+        password_selectors = [
+            (By.ID, "password"),
+            (By.ID, "Password"),  # Capital P
+            (By.NAME, "password"),
+            (By.NAME, "Password"),  # Capital P
+            (By.CSS_SELECTOR, "input[type='password']"),
+            (By.CSS_SELECTOR, "input[type='password'][name='password' i]"),  # Case-insensitive
+            (By.CSS_SELECTOR, "input[type='password'][name='Password' i]")
+        ]
+        
+        for selector_type, selector_value in password_selectors:
+            try:
+                password_field = self.wait.until(
+                    EC.presence_of_element_located((selector_type, selector_value))
+                )
+                logger.debug(f"Found password field with {selector_type}='{selector_value}'")
+                break
+            except TimeoutException:
+                continue
+        
+        if not password_field:
+            # Save screenshot for debugging
+            self.driver.save_screenshot(f"login_error_{int(time.time())}.png")
+            raise Exception("Could not find password field")
+        
         password_field.send_keys(self.password)
         password_field.send_keys(Keys.RETURN)
         
-        # Wait for dashboard to load
-        self.wait.until(
-            EC.presence_of_element_located((By.CLASS_NAME, "main-navigation"))
-        )
+        # Check for 2FA/verification code
+        time.sleep(3)
+        self._handle_2fa_if_needed()
+        
+        # Wait for dashboard to load - try multiple indicators
+        dashboard_loaded = False
+        dashboard_indicators = [
+            (By.CLASS_NAME, "main-navigation"),
+            (By.CLASS_NAME, "nav-bar"),
+            (By.XPATH, "//span[text()='Organization']"),
+            (By.XPATH, "//a[contains(@href, '/organization')]")
+        ]
+        
+        for selector_type, selector_value in dashboard_indicators:
+            try:
+                self.wait.until(
+                    EC.presence_of_element_located((selector_type, selector_value))
+                )
+                dashboard_loaded = True
+                logger.debug(f"Dashboard loaded, found element: {selector_type}='{selector_value}'")
+                break
+            except TimeoutException:
+                continue
+        
+        if not dashboard_loaded:
+            self.driver.save_screenshot(f"login_failed_{int(time.time())}.png")
+            raise Exception("Dashboard did not load after login")
+        
         logger.info("Successfully logged in")
         time.sleep(3)
+    
+    def _handle_2fa_if_needed(self):
+        """Handle 2FA verification if required"""
+        try:
+            # Check for verification code input field
+            verification_selectors = [
+                (By.ID, "code"),
+                (By.ID, "verification-code"),
+                (By.ID, "verificationCode"),
+                (By.NAME, "code"),
+                (By.NAME, "verificationCode"),
+                (By.CSS_SELECTOR, "input[type='text'][placeholder*='code' i]"),
+                (By.CSS_SELECTOR, "input[type='text'][placeholder*='verification' i]"),
+                (By.CSS_SELECTOR, "input[type='number']"),
+                (By.XPATH, "//input[contains(@placeholder, 'code')]"),
+                (By.XPATH, "//input[contains(@placeholder, 'verification')]")
+            ]
+            
+            verification_field = None
+            for selector_type, selector_value in verification_selectors:
+                try:
+                    # Use a short timeout here
+                    verification_field = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((selector_type, selector_value))
+                    )
+                    logger.info(f"Found verification code field with {selector_type}='{selector_value}'")
+                    break
+                except TimeoutException:
+                    continue
+            
+            if verification_field:
+                logger.info("=" * 60)
+                logger.info("2FA VERIFICATION REQUIRED")
+                logger.info("=" * 60)
+                logger.info("Please check your email for the verification code.")
+                
+                if self.headless:
+                    # In headless mode, prompt for code in terminal
+                    logger.info("Enter the verification code from your email:")
+                    verification_code = input("Verification code: ").strip()
+                else:
+                    # In GUI mode, let user know and wait for manual entry
+                    logger.info("Please enter the verification code in the browser window.")
+                    logger.info("The script will wait for you to complete the verification.")
+                    verification_code = input("Enter verification code (or press Enter after entering in browser): ").strip()
+                
+                if verification_code:
+                    verification_field.clear()
+                    verification_field.send_keys(verification_code)
+                    
+                    # Try to find and click submit button
+                    submit_selectors = [
+                        (By.XPATH, "//button[contains(text(), 'Verify')]"),
+                        (By.XPATH, "//button[contains(text(), 'Submit')]"),
+                        (By.XPATH, "//button[contains(text(), 'Continue')]"),
+                        (By.XPATH, "//input[@type='submit']"),
+                        (By.CSS_SELECTOR, "button[type='submit']")
+                    ]
+                    
+                    for selector_type, selector_value in submit_selectors:
+                        try:
+                            submit_btn = self.driver.find_element(selector_type, selector_value)
+                            submit_btn.click()
+                            logger.info("Clicked verification submit button")
+                            break
+                        except NoSuchElementException:
+                            continue
+                    else:
+                        # If no button found, try pressing Enter
+                        verification_field.send_keys(Keys.RETURN)
+                        logger.info("Pressed Enter to submit verification code")
+                else:
+                    # User entered code manually in browser
+                    logger.info("Waiting for manual verification completion...")
+                    time.sleep(10)  # Give user time to complete verification
+                
+                logger.info("=" * 60)
+                
+                # Wait a bit for the verification to process
+                time.sleep(5)
+                
+        except Exception as e:
+            logger.debug(f"No 2FA required or already completed: {e}")
     
     def select_organization(self, org_name: str):
         """Select organization by name"""
@@ -874,15 +1117,16 @@ class ComprehensiveRestore:
 
 
 class AutomatedMigrationTool:
-    """Main tool for automated migration"""
+    """Main tool for automated migration with dual API key support"""
     
-    def __init__(self, api_key: str, username: str, password: str, headless: bool = False):
-        self.api = MerakiAPIClient(api_key)
+    def __init__(self, source_api_key: str, target_api_key: str, username: str, password: str, headless: bool = False):
+        self.source_api = MerakiAPIClient(source_api_key)
+        self.target_api = MerakiAPIClient(target_api_key)
         self.username = username
         self.password = password
         self.headless = headless
-        self.backup_tool = ComprehensiveBackup(self.api)
-        self.restore_tool = ComprehensiveRestore(self.api)
+        self.backup_tool = ComprehensiveBackup(self.source_api)
+        self.restore_tool = ComprehensiveRestore(self.target_api)
     
     def execute_migration(self, source_org_id: str, source_network_id: str, 
                          target_org_id: str, target_network_name: Optional[str] = None):
@@ -890,7 +1134,7 @@ class AutomatedMigrationTool:
         
         # Step 1: Comprehensive backup
         logger.info("=" * 50)
-        logger.info("STEP 1: Backing up all settings")
+        logger.info("STEP 1: Backing up all settings (using source API key)")
         logger.info("=" * 50)
         
         backup = self.backup_tool.backup_all_settings(source_org_id, source_network_id)
@@ -911,7 +1155,10 @@ class AutomatedMigrationTool:
         logger.info("=" * 50)
         
         source_org_name = backup['org_name']
-        target_org_name = self.api.get_org_name(target_org_id)
+        target_org_name = self.target_api.get_org_name(target_org_id)
+        
+        logger.info(f"Source org: {source_org_name} (ID: {source_org_id})")
+        logger.info(f"Target org: {target_org_name} (ID: {target_org_id})")
         
         with MerakiUIAutomation(self.username, self.password, self.headless) as ui:
             ui.login()
@@ -936,7 +1183,7 @@ class AutomatedMigrationTool:
         
         # Step 3: Create network and add devices
         logger.info("=" * 50)
-        logger.info("STEP 3: Creating network and adding devices")
+        logger.info("STEP 3: Creating network and adding devices (using target API key)")
         logger.info("=" * 50)
         
         # Create network
@@ -947,11 +1194,11 @@ class AutomatedMigrationTool:
             "timeZone": backup['network_info'].get('timeZone', 'America/Los_Angeles')
         }
         
-        target_network_id = self.api.create_network(target_org_id, network_config)
+        target_network_id = self.target_api.create_network(target_org_id, network_config)
         logger.info(f"Created network: {target_network_id}")
         
         # Add devices to network
-        if self.api.add_devices_to_network(target_network_id, device_serials):
+        if self.target_api.add_devices_to_network(target_network_id, device_serials):
             logger.info("Devices added to network")
         else:
             logger.warning("Failed to add some devices to network")
@@ -961,7 +1208,7 @@ class AutomatedMigrationTool:
         
         # Step 4: Restore settings
         logger.info("=" * 50)
-        logger.info("STEP 4: Restoring all settings")
+        logger.info("STEP 4: Restoring all settings (using target API key)")
         logger.info("=" * 50)
         
         # Create device mapping (same serials in this case)
@@ -978,8 +1225,9 @@ class AutomatedMigrationTool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Automated Meraki Migration Tool")
-    parser.add_argument("--api-key", required=True, help="Meraki API key")
+    parser = argparse.ArgumentParser(description="Automated Meraki Migration Tool with Dual API Keys")
+    parser.add_argument("--source-api-key", required=True, help="Source organization API key")
+    parser.add_argument("--target-api-key", required=True, help="Target organization API key")
     parser.add_argument("--username", required=True, help="Meraki Dashboard username")
     parser.add_argument("--password", required=True, help="Meraki Dashboard password")
     parser.add_argument("--source-org", required=True, help="Source organization ID")
@@ -998,11 +1246,18 @@ def main():
     
     # Mask password in logs
     logger.info(f"Starting migration with user: {args.username}")
+    logger.info("Using separate API keys for source and target organizations")
     if args.headless:
         logger.info("Running in HEADLESS mode")
     
     try:
-        tool = AutomatedMigrationTool(args.api_key, args.username, args.password, args.headless)
+        tool = AutomatedMigrationTool(
+            args.source_api_key, 
+            args.target_api_key, 
+            args.username, 
+            args.password, 
+            args.headless
+        )
         tool.execute_migration(
             args.source_org,
             args.source_network,

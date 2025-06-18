@@ -11,7 +11,8 @@ This tool suite provides both manual and fully automated options for migrating M
 1. **`meraki_migration.py`** - Production-ready migration using environment variables (formerly secure_migration.py)
 2. **`meraki_auto_migration.py`** - Full automated migration with UI automation
 3. **`meraki_migration_dry_run.py`** - Preview tool to see what will be migrated
-4. **`requirements.txt`** - Python dependencies
+4. **`meraki_migration_server.py`** - Server version optimized for headless environments
+5. **`requirements.txt`** - Python dependencies
 
 ### Quick Decision Guide
 
@@ -19,7 +20,18 @@ This tool suite provides both manual and fully automated options for migrating M
 |----------|----------------|
 | Production environment with env vars | `meraki_migration.py` |
 | Full automation with inline credentials | `meraki_auto_migration.py` |
+| Server/headless environment | `meraki_migration_server.py` |
 | Preview what will happen (dry run) | `meraki_migration_dry_run.py` |
+| Cross-organization with different API access | Use dual API key feature |
+
+## What's New: Dual API Key Support
+
+The tool now supports using separate API keys for source and target organizations, enabling:
+
+- **Cross-Organization Migrations** - Migrate between organizations that don't share API access
+- **Enhanced Security** - Source organization can use read-only API key
+- **MSP/Partner Support** - Service providers can migrate customer networks
+- **Backward Compatible** - Single API key mode still supported
 
 ## What's New: Full Automation
 
@@ -30,6 +42,7 @@ Unlike manual migration scripts, this tool provides:
 3. **Comprehensive Backup** - Captures ALL settings before migration
 4. **Single Command Migration** - Complete migration in one command
 5. **Preview Mode** - See what will happen before running
+6. **Dual API Key Support** - Use different API keys for source and target
 
 ## Manual vs Automated Comparison
 
@@ -64,6 +77,11 @@ Unlike manual migration scripts, this tool provides:
    - Adds all devices to the network
    - Restores all backed-up settings
 
+4. **Dual API Key Support**
+   - Use separate API keys for source and target organizations
+   - Enables migrations between unrelated organizations
+   - Source org can use read-only API key
+
 ## Prerequisites
 
 ### Python Packages
@@ -78,7 +96,11 @@ Download ChromeDriver matching your Chrome version:
 - Add to PATH or place in script directory
 
 ### Meraki Requirements
-- API key with full admin access
+- API key(s) with appropriate access:
+  - **Single API Key Mode**: Full admin access to both organizations
+  - **Dual API Key Mode**: 
+    - Source API key: Read access to source organization
+    - Target API key: Full admin access to target organization
 - Dashboard login credentials (username/password)
 - Organization admin access for both source and target orgs
 
@@ -107,16 +129,33 @@ chromedriver --version
 
 ## Quick Start
 
+### Dual API Key Mode (Recommended for Cross-Org)
+
 1. **Preview migration (dry run):**
    ```bash
    python meraki_migration_dry_run.py \
-     --api-key YOUR_API_KEY \
+     --source-api-key SOURCE_API_KEY \
+     --target-api-key TARGET_API_KEY \
      --source-org SOURCE_ORG_ID \
      --source-network SOURCE_NETWORK_ID \
      --target-org TARGET_ORG_ID
    ```
 
-2. **Run migration (production with env vars):**
+2. **Run migration with dual API keys:**
+   ```bash
+   python meraki_auto_migration.py \
+     --source-api-key SOURCE_API_KEY \
+     --target-api-key TARGET_API_KEY \
+     --username your.email@company.com \
+     --password YOUR_PASSWORD \
+     --source-org SOURCE_ORG_ID \
+     --source-network SOURCE_NETWORK_ID \
+     --target-org TARGET_ORG_ID
+   ```
+
+### Single API Key Mode (Backward Compatible)
+
+1. **Run migration (production with env vars):**
    ```bash
    # Set environment variables
    export MERAKI_API_KEY='your-api-key'
@@ -127,10 +166,11 @@ chromedriver --version
    python meraki_migration.py SOURCE_ORG_ID SOURCE_NETWORK_ID TARGET_ORG_ID
    ```
 
-3. **Run migration (with inline credentials):**
+2. **Run migration (with inline credentials):**
    ```bash
    python meraki_auto_migration.py \
-     --api-key YOUR_API_KEY \
+     --source-api-key YOUR_API_KEY \
+     --target-api-key YOUR_API_KEY \
      --username your.email@company.com \
      --password YOUR_PASSWORD \
      --source-org SOURCE_ORG_ID \
@@ -143,6 +183,7 @@ chromedriver --version
 ### 1. Production Migration Script (`meraki_migration.py`)
 Uses environment variables for credentials (recommended for production).
 
+**Single API Key Mode:**
 ```bash
 # Set environment variables
 export MERAKI_API_KEY='your-api-key'
@@ -153,12 +194,26 @@ export MERAKI_PASSWORD='your-password'
 python meraki_migration.py SOURCE_ORG_ID SOURCE_NETWORK_ID TARGET_ORG_ID
 ```
 
+**Dual API Key Mode:**
+```bash
+# Set environment variables
+export MERAKI_SOURCE_API_KEY='source-api-key'
+export MERAKI_TARGET_API_KEY='target-api-key'
+export MERAKI_USERNAME='your-email@company.com'
+export MERAKI_PASSWORD='your-password'
+
+# Run migration
+python meraki_migration.py SOURCE_ORG_ID SOURCE_NETWORK_ID TARGET_ORG_ID
+```
+
 ### 2. Full Automation Script (`meraki_auto_migration.py`)
 Full automated migration with UI automation for device movement.
 
+**With Dual API Keys:**
 ```bash
 python meraki_auto_migration.py \
-  --api-key YOUR_API_KEY \
+  --source-api-key SOURCE_API_KEY \
+  --target-api-key TARGET_API_KEY \
   --username your.email@company.com \
   --password YOUR_PASSWORD \
   --source-org SOURCE_ORG_ID \
@@ -172,11 +227,32 @@ Preview what will be migrated without making any changes.
 
 ```bash
 python meraki_migration_dry_run.py \
-  --api-key YOUR_API_KEY \
+  --source-api-key SOURCE_API_KEY \
+  --target-api-key TARGET_API_KEY \
   --source-org SOURCE_ORG_ID \
   --source-network SOURCE_NETWORK_ID \
   --target-org TARGET_ORG_ID \
   --save-preview preview.json
+```
+
+### 4. Server Version (`meraki_migration_server.py`)
+Optimized for headless server environments.
+
+**Environment Variables Setup:**
+```bash
+# Dual API Key Mode
+export MERAKI_SOURCE_API_KEY='source-api-key'
+export MERAKI_TARGET_API_KEY='target-api-key'
+export MERAKI_USERNAME='your-email@company.com'
+export MERAKI_PASSWORD='your-password'
+
+# Single API Key Mode (backward compatible)
+export MERAKI_API_KEY='your-api-key'
+export MERAKI_USERNAME='your-email@company.com'
+export MERAKI_PASSWORD='your-password'
+
+# Run migration
+python meraki_migration_server.py SOURCE_ORG_ID SOURCE_NETWORK_ID TARGET_ORG_ID
 ```
 
 ## What Gets Migrated
@@ -224,7 +300,7 @@ python meraki_migration_dry_run.py \
 
 The script performs these steps automatically:
 
-1. **Backup Phase** (API)
+1. **Backup Phase** (API - uses source API key)
    - Connects to source network
    - Downloads all configurations
    - Saves backup to JSON file
@@ -237,11 +313,11 @@ The script performs these steps automatically:
    - Switches to target organization
    - Claims all devices using serials
 
-3. **Network Setup** (API)
+3. **Network Setup** (API - uses target API key)
    - Creates new network in target org
    - Adds all claimed devices to network
 
-4. **Restoration Phase** (API)
+4. **Restoration Phase** (API - uses target API key)
    - Applies all network-level settings
    - Configures each device individually
    - Restores all port configurations
@@ -253,6 +329,8 @@ The script performs these steps automatically:
 - ✅ Lab or test environments
 - ✅ Planned maintenance windows
 - ✅ When you have full admin access to both orgs
+- ✅ Cross-organization migrations (with dual API keys)
+- ✅ MSP/partner migrations
 
 ### When NOT to Use
 - ❌ Production networks during business hours
@@ -270,14 +348,18 @@ The script performs these steps automatically:
 
 ### Best Practices
 - **Credentials**: Use environment variables in production (`meraki_migration.py`)
-- **API Key**: Keep your API key secure and never commit to version control
+- **API Keys**: 
+  - Keep your API keys secure and never commit to version control
+  - Use read-only API key for source organization when possible
+  - Use separate API keys for enhanced security
 - **Backup Files**: Contain sensitive network configurations - store securely
 - **Access Control**: Limit who can run these scripts
 
 ### Using Environment Variables (Recommended)
 ```bash
-# Set once in your shell profile or CI/CD system
-export MERAKI_API_KEY='your-api-key'
+# Dual API Key Mode
+export MERAKI_SOURCE_API_KEY='source-api-key'
+export MERAKI_TARGET_API_KEY='target-api-key'
 export MERAKI_USERNAME='your-email@company.com'
 export MERAKI_PASSWORD='your-password'
 
@@ -288,9 +370,17 @@ python meraki_migration.py SOURCE_ORG SOURCE_NET TARGET_ORG
 ## Advanced Usage
 
 ### Running Headless (No Browser Window)
-Edit `meraki_auto_migration.py` and change:
-```python
-with MerakiUIAutomation(self.username, self.password, headless=True) as ui:
+```bash
+# Use the --headless flag
+python meraki_auto_migration.py \
+  --source-api-key KEY1 \
+  --target-api-key KEY2 \
+  --username user@email.com \
+  --password pass \
+  --source-org 123 \
+  --source-network L_123 \
+  --target-org 456 \
+  --headless
 ```
 
 ### Custom Wait Times
@@ -305,15 +395,16 @@ time.sleep(60)   # Increase to 1 minute
 
 ### Using with CI/CD
 ```yaml
-# Example GitHub Actions
+# Example GitHub Actions with dual API keys
 env:
-  MERAKI_API_KEY: ${{ secrets.MERAKI_API_KEY }}
+  MERAKI_SOURCE_API_KEY: ${{ secrets.MERAKI_SOURCE_API_KEY }}
+  MERAKI_TARGET_API_KEY: ${{ secrets.MERAKI_TARGET_API_KEY }}
   MERAKI_USERNAME: ${{ secrets.MERAKI_USERNAME }}
   MERAKI_PASSWORD: ${{ secrets.MERAKI_PASSWORD }}
 
 steps:
   - name: Run Migration
-    run: python meraki_migration.py $SOURCE_ORG $SOURCE_NET $TARGET_ORG
+    run: python meraki_migration_server.py $SOURCE_ORG $SOURCE_NET $TARGET_ORG
 ```
 
 ### Batch Migrations
@@ -329,12 +420,32 @@ for network_id, name in networks:
     time.sleep(300)  # Wait between migrations
 ```
 
+### MSP/Partner Usage
+For service providers migrating customer networks:
+```bash
+# Customer provides read-only API key for their org
+CUSTOMER_API_KEY="read-only-key-from-customer"
+
+# MSP uses their API key for target org
+MSP_API_KEY="msp-admin-key"
+
+python meraki_auto_migration.py \
+  --source-api-key $CUSTOMER_API_KEY \
+  --target-api-key $MSP_API_KEY \
+  --username msp@partner.com \
+  --password MSP_PASSWORD \
+  --source-org CUSTOMER_ORG \
+  --source-network CUSTOMER_NET \
+  --target-org MSP_ORG
+```
+
 ## Complete Workflow Example
 
 ```bash
-# 1. Preview what will happen
+# 1. Preview what will happen (with dual API keys)
 python meraki_migration_dry_run.py \
-  --api-key YOUR_KEY \
+  --source-api-key SOURCE_KEY \
+  --target-api-key TARGET_KEY \
   --source-org 123456 \
   --source-network L_123456789 \
   --target-org 654321 \
@@ -344,12 +455,13 @@ python meraki_migration_dry_run.py \
 cat migration_plan.json
 
 # 3. Set environment variables (for production)
-export MERAKI_API_KEY='your-key'
+export MERAKI_SOURCE_API_KEY='source-key'
+export MERAKI_TARGET_API_KEY='target-key'
 export MERAKI_USERNAME='admin@company.com'
 export MERAKI_PASSWORD='your-password'
 
 # 4. Run the migration
-python meraki_migration.py 123456 L_123456789 654321
+python meraki_migration_server.py 123456 L_123456789 654321
 
 # 5. Verify completion in Dashboard
 ```
@@ -363,7 +475,7 @@ python meraki_migration.py 123456 L_123456789 654321
 ## Browser Automation
 
 - The script uses Chrome in visible mode by default
-- You can run headless by modifying the script
+- You can run headless with the `--headless` flag
 - Ensure your Chrome browser is up to date
 - Don't interact with the browser while script is running
 
@@ -396,12 +508,18 @@ Solution: Ensure ChromeDriver is installed and in your system PATH
 - The script handles rate limiting automatically
 - If issues persist, add longer delays between operations
 
+### API Key Permission Errors
+- Ensure source API key has at least read access
+- Ensure target API key has full admin access
+- Verify API keys are not expired or revoked
+
 ## Example Output
 
 ```
 2024-01-15 10:30:00 - INFO - Starting migration with user: admin@company.com
+2024-01-15 10:30:00 - INFO - Using SEPARATE API keys for source and target organizations
 2024-01-15 10:30:00 - INFO - ==================================================
-2024-01-15 10:30:00 - INFO - STEP 1: Backing up all settings
+2024-01-15 10:30:00 - INFO - STEP 1: Backing up all settings (using source API key)
 2024-01-15 10:30:00 - INFO - ==================================================
 2024-01-15 10:30:01 - INFO - Starting comprehensive backup for network L_123456789
 2024-01-15 10:30:02 - INFO - Found 12 devices
@@ -418,12 +536,12 @@ Solution: Ensure ChromeDriver is installed and in your system PATH
 2024-01-15 10:30:35 - INFO - Waiting 120 seconds for unclaim to process...
 2024-01-15 10:32:35 - INFO - Successfully claimed 12 devices
 2024-01-15 10:33:05 - INFO - ==================================================
-2024-01-15 10:33:05 - INFO - STEP 3: Creating network and adding devices
+2024-01-15 10:33:05 - INFO - STEP 3: Creating network and adding devices (using target API key)
 2024-01-15 10:33:05 - INFO - ==================================================
 2024-01-15 10:33:06 - INFO - Created network: L_987654321
 2024-01-15 10:33:07 - INFO - Devices added to network
 2024-01-15 10:33:17 - INFO - ==================================================
-2024-01-15 10:33:17 - INFO - STEP 4: Restoring all settings
+2024-01-15 10:33:17 - INFO - STEP 4: Restoring all settings (using target API key)
 2024-01-15 10:33:17 - INFO - ==================================================
 2024-01-15 10:33:18 - INFO - Restored STP settings
 2024-01-15 10:33:19 - INFO - Restored MTU settings
@@ -469,6 +587,18 @@ The script creates a comprehensive backup file containing:
 
 ## Frequently Asked Questions
 
+### Q: When should I use dual API keys vs single API key?
+**A:** Use dual API keys when:
+- Source and target orgs don't share API access
+- You want enhanced security (read-only for source)
+- You're an MSP migrating customer networks
+- Organizations have different security policies
+
+Use single API key when:
+- You have admin access to both organizations
+- Both orgs are under your control
+- Simpler setup is preferred
+
 ### Q: How long will devices be offline?
 **A:** Typically 3-5 minutes during the unclaim/claim process. The 120-second wait is mandatory.
 
@@ -492,6 +622,9 @@ The script creates a comprehensive backup file containing:
 
 ### Q: What about switch stacks?
 **A:** Stack configurations are preserved, but ensure all stack members are migrated together.
+
+### Q: Can the source org use a read-only API key?
+**A:** Yes, when using dual API key mode, the source organization only needs read access.
 
 ## Support
 

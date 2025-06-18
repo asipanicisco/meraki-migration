@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Meraki Migration Tool - Server Version (Headless)
+Meraki Migration Tool - Server Version (Headless) with Dual API Keys
 Optimized for running on Linux servers without display
 """
 
@@ -32,19 +32,33 @@ logger = logging.getLogger(__name__)
 
 def get_credentials():
     """Get credentials from environment variables"""
-    api_key = os.environ.get('MERAKI_API_KEY')
+    source_api_key = os.environ.get('MERAKI_SOURCE_API_KEY')
+    target_api_key = os.environ.get('MERAKI_TARGET_API_KEY')
     username = os.environ.get('MERAKI_USERNAME')
     password = os.environ.get('MERAKI_PASSWORD')
     
-    if not all([api_key, username, password]):
+    # Check if using single API key (backward compatibility)
+    if not source_api_key or not target_api_key:
+        single_api_key = os.environ.get('MERAKI_API_KEY')
+        if single_api_key:
+            logger.info("Using single API key for both source and target")
+            source_api_key = single_api_key
+            target_api_key = single_api_key
+    
+    if not all([source_api_key, target_api_key, username, password]):
         logger.error("Missing required environment variables")
         print("\nPlease set the following environment variables:")
+        print("\nFor dual API key mode (recommended):")
+        print("  export MERAKI_SOURCE_API_KEY='source-org-api-key'")
+        print("  export MERAKI_TARGET_API_KEY='target-org-api-key'")
+        print("\nFor single API key mode (backward compatibility):")
         print("  export MERAKI_API_KEY='your-api-key'")
+        print("\nAnd always:")
         print("  export MERAKI_USERNAME='your-email@company.com'")
         print("  export MERAKI_PASSWORD='your-password'")
         sys.exit(1)
     
-    return api_key, username, password
+    return source_api_key, target_api_key, username, password
 
 
 def main():
@@ -54,6 +68,11 @@ def main():
         print("  python meraki_migration_server.py 123456 L_123456789 654321")
         print("\nNote: This server version runs Chrome in HEADLESS mode")
         print("      and uses environment variables for credentials")
+        print("\nDual API key mode (set both):")
+        print("  - MERAKI_SOURCE_API_KEY")
+        print("  - MERAKI_TARGET_API_KEY")
+        print("\nSingle API key mode (backward compatibility):")
+        print("  - MERAKI_API_KEY")
         sys.exit(1)
     
     source_org_id = sys.argv[1]
@@ -61,11 +80,16 @@ def main():
     target_org_id = sys.argv[3]
     
     # Get credentials from environment
-    api_key, username, password = get_credentials()
+    source_api_key, target_api_key, username, password = get_credentials()
     
     logger.info(f"Starting automated migration (HEADLESS MODE)")
     logger.info(f"Source: Org {source_org_id}, Network {source_network_id}")
     logger.info(f"Target: Org {target_org_id}")
+    
+    if source_api_key == target_api_key:
+        logger.info("Using SINGLE API key for both organizations")
+    else:
+        logger.info("Using SEPARATE API keys for source and target organizations")
     
     try:
         # Check if we can continue from existing backup
@@ -88,14 +112,15 @@ def main():
                 
                 # Continue from step 2
                 logger.info("Continuing from existing backup...")
-                tool = AutomatedMigrationTool(api_key, username, password)
+                tool = AutomatedMigrationTool(source_api_key, target_api_key, username, password)
                 
                 # Call the rest of the migration manually
                 from meraki_auto_migration import MerakiAPIClient
-                api = MerakiAPIClient(api_key)
+                source_api = MerakiAPIClient(source_api_key)
+                target_api = MerakiAPIClient(target_api_key)
                 
                 source_org_name = backup['org_name']
-                target_org_name = api.get_org_name(target_org_id)
+                target_org_name = target_api.get_org_name(target_org_id)
                 
                 # UI Automation part
                 logger.info("=" * 50)
@@ -123,11 +148,53 @@ def main():
                 # Continue with network creation and restoration...
                 logger.info("Devices moved successfully! Continue with network creation.")
                 
-                # You can add the rest of the migration here or run it separately
+                # Wait for claim to process
+                logger.info("Waiting 30 seconds for claim to process...")
+                time.sleep(30)
+                
+                # Step 3: Create network and add devices
+                logger.info("=" * 50)
+                logger.info("STEP 3: Creating network and adding devices")
+                logger.info("=" * 50)
+                
+                # Create network
+                network_name = f"{backup['network_info']['name']}_migrated"
+                network_config = {
+                    "name": network_name,
+                    "productTypes": backup['network_info'].get('productTypes', ['switch']),
+                    "timeZone": backup['network_info'].get('timeZone', 'America/Los_Angeles')
+                }
+                
+                target_network_id = target_api.create_network(target_org_id, network_config)
+                logger.info(f"Created network: {target_network_id}")
+                
+                # Add devices to network
+                if target_api.add_devices_to_network(target_network_id, device_serials):
+                    logger.info("Devices added to network")
+                else:
+                    logger.warning("Failed to add some devices to network")
+                
+                # Wait for devices to be ready
+                time.sleep(10)
+                
+                # Step 4: Restore settings
+                logger.info("=" * 50)
+                logger.info("STEP 4: Restoring all settings")
+                logger.info("=" * 50)
+                
+                # Create device mapping (same serials in this case)
+                device_mapping = {serial: serial for serial in device_serials}
+                
+                from meraki_auto_migration import ComprehensiveRestore
+                restore_tool = ComprehensiveRestore(target_api)
+                restore_tool.restore_all_settings(backup, target_network_id, device_mapping)
+                
+                print(f"\n✓ Migration completed successfully!")
+                print(f"  New network ID: {target_network_id}")
                 
         else:
             # Full migration from scratch
-            tool = AutomatedMigrationTool(api_key, username, password)
+            tool = AutomatedMigrationTool(source_api_key, target_api_key, username, password)
             target_network_id = tool.execute_migration(
                 source_org_id,
                 source_network_id,
