@@ -192,7 +192,8 @@ The tool now automatically handles email-based 2FA:
 Enable detailed logging with the `--debug` flag:
 ```bash
 python meraki_auto_migration.py \
-  --api-key YOUR_API_KEY \
+  --source-api-key SOURCE_API_KEY \
+  --target-api-key TARGET_API_KEY \
   --username your.email@company.com \
   --password YOUR_PASSWORD \
   --source-org SOURCE_ORG_ID \
