@@ -1388,150 +1388,221 @@ class MerakiUIAutomation:
         current_url = self.driver.current_url
         logger.info(f"Current URL before navigation: {current_url}")
         
-        # First, we need to get out of network context if we're in one
-        if "/n/" in current_url:
-            logger.info("Currently in network context, need to switch to organization level")
-            # Click on organization name in breadcrumb or use org selector
-            try:
-                # Method 1: Click on org in breadcrumb
-                org_breadcrumb = self.driver.find_element(By.XPATH, "//a[contains(@href, '/organization')]")
-                org_breadcrumb.click()
-                time.sleep(3)
-                logger.info("Clicked organization breadcrumb")
-            except:
-                try:
-                    # Method 2: Use org selector dropdown
-                    org_selector = self.driver.find_element(By.CSS_SELECTOR, ".org-selector, [class*='org-selector']")
-                    org_selector.click()
-                    time.sleep(2)
-                    # Click on "Organization > Overview" or similar
-                    org_overview = self.driver.find_element(By.XPATH, "//a[contains(text(), 'Overview')]")
-                    org_overview.click()
-                    time.sleep(3)
-                    logger.info("Used org selector to go to organization level")
-                except:
-                    logger.warning("Could not exit network context via UI")
+        # Take a screenshot to see current state
+        self.save_debug_info("before_inventory_nav", save_html=True)
         
-        # Now try to navigate to inventory
-        # Method 1: Direct URL navigation
+        # Method 1: Direct menu navigation - most reliable
         try:
-            if "/o/" in current_url:
-                # Extract organization part and build inventory URL
-                import re
-                match = re.search(r'/o/([^/]+)', current_url)
-                if match:
-                    org_part = match.group(0)
-                    base_url = current_url.split('/o/')[0]
-                    inventory_url = f"{base_url}{org_part}/manage/organization/inventory"
-                    logger.info(f"Navigating directly to: {inventory_url}")
-                    self.driver.get(inventory_url)
-                    time.sleep(5)
-                    
-                    if "/inventory" in self.driver.current_url:
-                        logger.info("Successfully navigated to inventory page via direct URL")
-                        return True
-        except Exception as e:
-            logger.warning(f"Direct URL navigation failed: {e}")
-        
-        # Method 2: Try menu navigation
-        try:
-            # Look for Organization menu first
+            # Look for Organization menu in the navigation
+            logger.info("Looking for Organization menu...")
+            org_menu = None
             org_menu_selectors = [
-                (By.XPATH, "//span[text()='Organization']"),
-                (By.XPATH, "//span[contains(text(), 'Organization')]"),
-                (By.XPATH, "//a[text()='Organization']"),
                 (By.XPATH, "//nav//span[text()='Organization']"),
+                (By.XPATH, "//span[text()='Organization']"),
+                (By.XPATH, "//a[span[text()='Organization']]"),
+                (By.XPATH, "//*[@class='main-navigation']//span[text()='Organization']"),
+                (By.CSS_SELECTOR, "nav span:contains('Organization')"),
             ]
             
-            org_menu_clicked = False
             for method, selector in org_menu_selectors:
                 try:
-                    org_menu = WebDriverWait(self.driver, 5).until(
-                        EC.element_to_be_clickable((method, selector))
-                    )
-                    org_menu.click()
-                    org_menu_clicked = True
-                    logger.info("Clicked on Organization menu")
-                    time.sleep(2)
-                    break
-                except:
+                    if method == By.CSS_SELECTOR and ":contains" in selector:
+                        # Skip jQuery-style selectors
+                        continue
+                    elements = self.driver.find_elements(method, selector)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            # Check if it's actually in the main navigation
+                            try:
+                                # Verify it's in a nav element
+                                nav_parent = elem.find_element(By.XPATH, "ancestor::nav")
+                                org_menu = elem
+                                logger.info(f"Found Organization menu element")
+                                break
+                            except:
+                                # Try without nav requirement
+                                org_menu = elem
+                                break
+                    if org_menu:
+                        break
+                except Exception as e:
+                    logger.debug(f"Selector {method} {selector} failed: {e}")
                     continue
             
-            if org_menu_clicked:
+            if org_menu:
+                # Click on Organization menu
+                try:
+                    org_menu.click()
+                except:
+                    # Try JavaScript click if regular click fails
+                    self.driver.execute_script("arguments[0].click();", org_menu)
+                
+                logger.info("Clicked Organization menu")
+                time.sleep(2)
+                
                 # Now look for Inventory submenu
-                inventory_link_selectors = [
+                inventory_link = None
+                inventory_selectors = [
                     (By.XPATH, "//a[text()='Inventory']"),
+                    (By.XPATH, "//a[span[text()='Inventory']]"),
                     (By.XPATH, "//a[contains(text(), 'Inventory')]"),
-                    (By.XPATH, "//a[contains(@href, '/inventory')]"),
                     (By.LINK_TEXT, "Inventory"),
+                    (By.PARTIAL_LINK_TEXT, "Inventory"),
                 ]
                 
-                for method, selector in inventory_link_selectors:
+                for method, selector in inventory_selectors:
                     try:
                         inventory_link = WebDriverWait(self.driver, 5).until(
                             EC.element_to_be_clickable((method, selector))
                         )
-                        inventory_link.click()
-                        logger.info("Clicked on Inventory submenu")
-                        time.sleep(3)
-                        
-                        if "/inventory" in self.driver.current_url:
-                            logger.info("Successfully navigated to inventory page via menu")
-                            return True
+                        logger.info("Found Inventory link")
+                        break
                     except:
                         continue
-            
+                
+                if inventory_link:
+                    inventory_link.click()
+                    logger.info("Clicked Inventory link")
+                    time.sleep(5)
+                    
+                    # Verify we're on inventory page
+                    if "/inventory" in self.driver.current_url:
+                        logger.info("Successfully navigated to inventory page via menu")
+                        return True
+                    else:
+                        logger.warning(f"Click completed but not on inventory page. Current URL: {self.driver.current_url}")
+            else:
+                logger.warning("Could not find Organization menu")
         except Exception as e:
             logger.warning(f"Menu navigation failed: {e}")
         
-        # Method 3: Look for direct inventory link anywhere on page
-        try:
-            inventory_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, '/inventory')]")
-            for link in inventory_links:
-                if link.is_displayed():
-                    href = link.get_attribute('href')
-                    if '/organization/inventory' in href:
-                        logger.info(f"Found direct inventory link: {href}")
+        # Method 2: If we're in network context, try to go to org first
+        if "/n/" in current_url or "/Hilton-" in current_url:
+            logger.info("In network context, trying to switch to organization view first")
+            
+            # Try clicking on the organization name/breadcrumb
+            try:
+                # Look for org name in breadcrumb or header
+                org_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, '/o/')]")
+                for link in org_links:
+                    if link.is_displayed():
+                        logger.info(f"Found org link: {link.text}")
                         link.click()
                         time.sleep(3)
+                        break
+            except:
+                pass
+            
+            # Try using org dropdown selector (first dropdown)
+            try:
+                dropdowns = self.driver.find_elements(By.CSS_SELECTOR, ".mds-global-nav-select-button, button[class*='select'], .dropdown-toggle")
+                if dropdowns:
+                    logger.info(f"Found {len(dropdowns)} dropdowns")
+                    # The first dropdown is usually the org selector
+                    dropdowns[0].click()
+                    time.sleep(2)
+                    
+                    # Look for "Go to Organization" or "Overview" option
+                    org_options = [
+                        "//a[contains(text(), 'Overview')]",
+                        "//a[contains(text(), 'overview')]",
+                        "//a[contains(text(), 'Organization')]",
+                        "//a[contains(text(), 'Go to')]",
+                    ]
+                    
+                    for xpath in org_options:
+                        try:
+                            option = self.driver.find_element(By.XPATH, xpath)
+                            if option.is_displayed():
+                                option.click()
+                                logger.info(f"Clicked org option: {option.text}")
+                                time.sleep(3)
+                                break
+                        except:
+                            continue
+            except Exception as e:
+                logger.warning(f"Dropdown navigation failed: {e}")
+        
+        # Method 3: Look for any visible Inventory link on the page
+        try:
+            logger.info("Looking for any Inventory link on page...")
+            all_links = self.driver.find_elements(By.TAG_NAME, "a")
+            for link in all_links:
+                if link.is_displayed() and "inventory" in link.text.lower():
+                    href = link.get_attribute('href') or ''
+                    if '/organization/inventory' in href or '/manage/organization/inventory' in href:
+                        logger.info(f"Found direct inventory link: {link.text} -> {href}")
+                        link.click()
+                        time.sleep(5)
                         
                         if "/inventory" in self.driver.current_url:
                             logger.info("Successfully navigated to inventory page via direct link")
                             return True
-        except:
-            pass
-        
-        # Method 4: Force navigation via URL manipulation
-        try:
-            current_url = self.driver.current_url
-            # Build inventory URL based on current URL structure
-            if "meraki.com" in current_url:
-                # Extract base URL
-                parts = current_url.split('/')
-                base_parts = []
-                for part in parts:
-                    base_parts.append(part)
-                    if part.startswith('o_') or (len(part) > 10 and not '.' in part):
-                        # Found organization ID
-                        break
-                
-                if base_parts:
-                    inventory_url = '/'.join(base_parts) + '/manage/organization/inventory'
-                    logger.info(f"Force navigating to: {inventory_url}")
-                    self.driver.get(inventory_url)
-                    time.sleep(5)
-                    
-                    if "/inventory" in self.driver.current_url:
-                        logger.info("Successfully navigated to inventory page via forced URL")
-                        return True
         except Exception as e:
-            logger.warning(f"Force URL navigation failed: {e}")
+            logger.warning(f"Direct link search failed: {e}")
+        
+        # Method 4: Try to find and click through the UI path
+        try:
+            # Sometimes we need to click through multiple levels
+            # First ensure we're at org level
+            if "/n/" in self.driver.current_url:
+                # Click on org name in header
+                org_name_elements = self.driver.find_elements(By.CSS_SELECTOR, ".org-name, .organization-name, h1, h2")
+                for elem in org_name_elements:
+                    text = elem.text
+                    if text and "network" not in text.lower():
+                        try:
+                            elem.click()
+                            time.sleep(2)
+                            break
+                        except:
+                            pass
+            
+            # Now try Organization menu again
+            self.driver.execute_script("""
+                // Try to find and click Organization menu via JavaScript
+                var orgMenu = Array.from(document.querySelectorAll('span')).find(el => el.textContent === 'Organization');
+                if (orgMenu) {
+                    orgMenu.click();
+                    return true;
+                }
+                return false;
+            """)
+            time.sleep(2)
+            
+            # Then inventory
+            self.driver.execute_script("""
+                // Try to find and click Inventory link via JavaScript
+                var invLink = Array.from(document.querySelectorAll('a')).find(el => el.textContent.includes('Inventory'));
+                if (invLink) {
+                    invLink.click();
+                    return true;
+                }
+                return false;
+            """)
+            time.sleep(5)
+            
+            if "/inventory" in self.driver.current_url:
+                logger.info("Successfully navigated to inventory page via JavaScript")
+                return True
+                
+        except Exception as e:
+            logger.warning(f"JavaScript navigation failed: {e}")
         
         # If all methods failed, save debug info
         self.save_debug_info("inventory_navigation_failed", save_html=True)
-        logger.error("All inventory navigation methods failed")
-        logger.error(f"Final URL: {self.driver.current_url}")
         
+        # Log available navigation elements for debugging
+        logger.error("Failed to navigate to inventory. Available navigation elements:")
+        try:
+            nav_elements = self.driver.find_elements(By.XPATH, "//nav//span | //nav//a")
+            for elem in nav_elements[:20]:
+                if elem.text:
+                    logger.error(f"  - {elem.text}")
+        except:
+            pass
+        
+        logger.error(f"Final URL: {self.driver.current_url}")
         return False
     
     def unclaim_devices(self, org_name: str, device_serials: List[str]) -> bool:
@@ -1542,8 +1613,48 @@ class MerakiUIAutomation:
         if not self.navigate_to_inventory():
             return False
         
-        # Wait for page to load
-        time.sleep(3)
+        # Wait for page to load completely
+        time.sleep(5)
+        self.wait_for_page_load()
+        
+        # Take screenshot and save HTML for debugging
+        self.save_debug_info("inventory_page", save_html=True)
+        
+        # Log current URL and page title
+        logger.info(f"Current URL: {self.driver.current_url}")
+        logger.info(f"Page title: {self.driver.title}")
+        
+        # Check if we're on the right page by looking for inventory indicators
+        inventory_indicators = [
+            "Inventory",
+            "Claim",
+            "Serial",
+            "Model"
+        ]
+        
+        page_text = self.driver.find_element(By.TAG_NAME, "body").text
+        found_indicators = [ind for ind in inventory_indicators if ind in page_text]
+        logger.info(f"Found inventory indicators: {found_indicators}")
+        
+        # Wait for table to load
+        try:
+            # Wait for table or "no devices" message
+            WebDriverWait(self.driver, 10).until(
+                lambda driver: len(driver.find_elements(By.CSS_SELECTOR, "table tbody tr")) > 0 or
+                              len(driver.find_elements(By.XPATH, "//*[contains(text(), 'No devices') or contains(text(), 'no results')]")) > 0
+            )
+        except:
+            logger.warning("Timeout waiting for inventory table to load")
+        
+        # Check how many total devices are in inventory
+        all_rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr, tr[role='row']")
+        logger.info(f"Found {len(all_rows)} total rows in inventory table")
+        
+        # Log first few rows to see what's there
+        for i, row in enumerate(all_rows[:5]):
+            row_text = row.text.strip()
+            if row_text:
+                logger.debug(f"Row {i}: {row_text[:200]}")
         
         # Find the search box (similar to network removal)
         search_box = None
@@ -1555,6 +1666,9 @@ class MerakiUIAutomation:
             (By.XPATH, "//main//input[@type='search']"),
             (By.XPATH, "//section//input[@type='search']"),
             (By.CSS_SELECTOR, "input[placeholder*='serial' i], input[placeholder*='device' i]"),
+            # Generic search box
+            (By.CSS_SELECTOR, "input[type='search']"),
+            (By.CSS_SELECTOR, "input.search-box"),
         ]
         
         # Find ALL search boxes and log them
@@ -1563,7 +1677,8 @@ class MerakiUIAutomation:
         for i, box in enumerate(all_search_boxes):
             placeholder = box.get_attribute('placeholder') or 'No placeholder'
             is_displayed = box.is_displayed()
-            logger.debug(f"Search box {i}: placeholder='{placeholder}', displayed={is_displayed}")
+            parent_class = box.find_element(By.XPATH, "..").get_attribute('class') or 'No class'
+            logger.debug(f"Search box {i}: placeholder='{placeholder}', displayed={is_displayed}, parent_class='{parent_class}'")
         
         # Find the right search box (not the global one)
         for method, selector in search_selectors:
@@ -1589,10 +1704,21 @@ class MerakiUIAutomation:
                 continue
         
         if not search_box:
-            logger.warning("Could not find inventory search box, will try to select devices without search")
+            logger.warning("Could not find inventory search box, will look for devices without search")
+            # Check if devices are visible without search
+            visible_serials = []
+            for row in all_rows:
+                row_text = row.text
+                for serial in device_serials:
+                    if serial in row_text:
+                        visible_serials.append(serial)
+            
+            if visible_serials:
+                logger.info(f"Found {len(visible_serials)} devices visible without search: {visible_serials}")
         
         # Track selected devices
         selected_count = 0
+        devices_not_found = []
         
         # Search and select devices
         for serial in device_serials:
@@ -1615,7 +1741,7 @@ class MerakiUIAutomation:
             
             # Find and select device
             device_found = False
-            rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+            rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr, tr[role='row']")
             
             for row in rows:
                 if serial in row.text:
@@ -1644,6 +1770,7 @@ class MerakiUIAutomation:
                     break
             
             if not device_found:
+                devices_not_found.append(serial)
                 logger.warning(f"Device {serial} not found in inventory - may already be unclaimed")
         
         # Clear search to show all selected devices
@@ -1658,10 +1785,20 @@ class MerakiUIAutomation:
         
         if selected_count == 0:
             logger.warning("No devices were selected - they may already be unclaimed")
-            logger.info("Continuing with migration...")
-            return True  # Continue anyway
-        
+            logger.info(f"Devices not found: {devices_not_found}")
+            
+            # Check if the devices might be in a different organization
+            if len(devices_not_found) == len(device_serials):
+                logger.info("All devices not found in inventory. They may have been successfully removed from the network.")
+                logger.info("Continuing with migration...")
+                return True  # Continue anyway
+            
         logger.info(f"Selected {selected_count} devices for unclaim")
+        
+        # Only proceed with unclaim if we have devices selected
+        if selected_count == 0:
+            logger.info("No devices to unclaim, continuing...")
+            return True
         
         # Find and click Unclaim button
         unclaim_btn = None
@@ -1692,11 +1829,13 @@ class MerakiUIAutomation:
         
         unclaim_btn.click()
         logger.info("Clicked Unclaim button")
-        time.sleep(2)
+        time.sleep(3)
         
-        # Confirm unclaim
+        # Check if a confirmation dialog appears
+        # Note: When devices are already removed from network, there may be no confirmation
+        confirmation_appeared = False
         try:
-            # Look for confirmation button
+            # Look for confirmation button with a short timeout
             confirm_selectors = [
                 (By.XPATH, "//button[contains(text(), 'Unclaim from organization')]"),
                 (By.XPATH, "//div[contains(@class, 'modal')]//button[contains(text(), 'Unclaim')]"),
@@ -1708,28 +1847,64 @@ class MerakiUIAutomation:
             confirm_btn = None
             for method, selector in confirm_selectors:
                 try:
-                    confirm_btn = WebDriverWait(self.driver, 5).until(
+                    # Use a short timeout since confirmation may not appear
+                    confirm_btn = WebDriverWait(self.driver, 3).until(
                         EC.element_to_be_clickable((method, selector))
                     )
                     logger.info(f"Found confirmation button: {confirm_btn.text}")
+                    confirmation_appeared = True
                     break
                 except:
                     continue
             
             if confirm_btn:
                 confirm_btn.click()
-                logger.info("Confirmed device unclaim")
+                logger.info("Clicked confirmation button")
                 time.sleep(5)
-                return True
-            else:
-                logger.error("Could not find unclaim confirmation button")
-                self.save_debug_info("no_unclaim_confirm", save_html=True)
-                return False
+        except:
+            pass
+        
+        if not confirmation_appeared:
+            logger.info("No confirmation dialog appeared - devices may have been unclaimed directly")
+            time.sleep(5)  # Wait for unclaim to process
+        
+        # Verify unclaim succeeded by checking if devices are gone from inventory
+        try:
+            # Check if we're still on inventory page
+            if "/inventory" in self.driver.current_url:
+                # Look for success message or check if devices are gone
+                page_text = self.driver.find_element(By.TAG_NAME, "body").text
                 
-        except Exception as e:
-            logger.error(f"Could not confirm unclaim: {e}")
-            self.save_debug_info("unclaim_confirm_failed", save_html=True)
-            return False
+                # Common success indicators
+                success_indicators = [
+                    "successfully unclaimed",
+                    "has been unclaimed",
+                    "unclaimed from organization",
+                    "removed from organization",
+                    "no devices found",
+                    "0 devices"
+                ]
+                
+                success_found = any(indicator in page_text.lower() for indicator in success_indicators)
+                
+                if success_found:
+                    logger.info("Unclaim appears to have succeeded based on page content")
+                else:
+                    # Check if the devices are still visible
+                    remaining_devices = []
+                    for serial in device_serials:
+                        if serial in page_text:
+                            remaining_devices.append(serial)
+                    
+                    if remaining_devices:
+                        logger.warning(f"These devices may still be in inventory: {remaining_devices}")
+                    else:
+                        logger.info("Devices no longer visible in inventory - unclaim likely succeeded")
+        except:
+            pass
+        
+        logger.info("Unclaim operation completed")
+        return True
     
     def claim_devices(self, org_name: str, device_serials: List[str]) -> bool:
         """Claim devices in organization"""
