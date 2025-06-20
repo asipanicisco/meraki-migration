@@ -732,39 +732,186 @@ class MerakiUIAutomation:
         logger.info(f"Selecting organization: {org_name}")
         
         current_url = self.driver.current_url
+        logger.info(f"Current URL: {current_url}")
         
-        # If on organizations overview page
+        # Take a screenshot to see current state
+        self.save_debug_info(f"before_select_org_{org_name.replace(' ', '_')}", save_html=False)
+        
+        # Method 1: Use organization selector dropdown
+        try:
+            # Find the org selector - usually the first dropdown in the header
+            org_selector = None
+            selector_methods = [
+                (By.CSS_SELECTOR, ".org-selector"),
+                (By.CSS_SELECTOR, "[class*='org-selector']"),
+                (By.CSS_SELECTOR, ".mds-global-nav-select-button"),
+                (By.CSS_SELECTOR, "button[class*='select']"),
+                (By.XPATH, "//button[contains(@class, 'dropdown')]"),
+                (By.XPATH, "//div[@class='org-name']"),
+                (By.CSS_SELECTOR, ".dropdown-toggle"),
+            ]
+            
+            # Find all potential dropdowns
+            all_dropdowns = self.driver.find_elements(By.CSS_SELECTOR, "button, div.dropdown-toggle")
+            logger.info(f"Found {len(all_dropdowns)} potential dropdown elements")
+            
+            # Look for the one that contains org name or is the first major dropdown
+            for dropdown in all_dropdowns:
+                dropdown_text = dropdown.text
+                if dropdown_text and dropdown.is_displayed():
+                    # Check if it's likely the org selector
+                    if any(keyword in dropdown_text for keyword in ["Organization", "org", current_url.split('/')[-1]]):
+                        org_selector = dropdown
+                        logger.info(f"Found org selector with text: {dropdown_text}")
+                        break
+            
+            # If not found by text, try the first dropdown in header
+            if not org_selector:
+                header_dropdowns = self.driver.find_elements(By.CSS_SELECTOR, "header button, nav button, .header button")
+                if header_dropdowns:
+                    org_selector = header_dropdowns[0]
+                    logger.info(f"Using first header dropdown as org selector")
+            
+            if org_selector:
+                # Click the org selector
+                try:
+                    org_selector.click()
+                except:
+                    self.driver.execute_script("arguments[0].click();", org_selector)
+                
+                logger.info("Clicked org selector dropdown")
+                time.sleep(2)
+                
+                # Look for the target organization in the dropdown
+                org_found = False
+                org_link_selectors = [
+                    (By.XPATH, f"//a[contains(text(), '{org_name}')]"),
+                    (By.XPATH, f"//span[contains(text(), '{org_name}')]"),
+                    (By.XPATH, f"//*[contains(text(), '{org_name}')]"),
+                    (By.PARTIAL_LINK_TEXT, org_name),
+                ]
+                
+                for method, selector in org_link_selectors:
+                    try:
+                        org_elements = self.driver.find_elements(method, selector)
+                        for elem in org_elements:
+                            if elem.is_displayed() and org_name in elem.text:
+                                elem.click()
+                                logger.info(f"Clicked on organization: {org_name}")
+                                org_found = True
+                                time.sleep(5)
+                                break
+                        if org_found:
+                            break
+                    except:
+                        continue
+                
+                if org_found:
+                    # Verify we switched organizations
+                    new_url = self.driver.current_url
+                    logger.info(f"New URL after org selection: {new_url}")
+                    return True
+                else:
+                    logger.error(f"Could not find '{org_name}' in organization dropdown")
+                    # Log available organizations
+                    try:
+                        dropdown_items = self.driver.find_elements(By.CSS_SELECTOR, "a, span")
+                        available_orgs = []
+                        for item in dropdown_items:
+                            if item.is_displayed() and item.text and len(item.text) > 3:
+                                available_orgs.append(item.text)
+                        logger.info(f"Available organizations in dropdown: {available_orgs[:10]}")
+                    except:
+                        pass
+                        
+            else:
+                logger.error("Could not find organization selector dropdown")
+                
+        except Exception as e:
+            logger.error(f"Failed to use org selector dropdown: {e}")
+        
+        # Method 2: Check if we're on the organizations overview page
         if "/organizations" in current_url or "global_overview" in current_url:
+            logger.info("On organizations overview page, looking for org in table")
             try:
-                org_link = self.wait.until(
+                # Look for organization in the table
+                org_link = WebDriverWait(self.driver, 10).until(
                     EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{org_name}') or contains(., '{org_name}')]"))
                 )
                 org_link.click()
-                logger.info(f"Clicked on organization: {org_name}")
+                logger.info(f"Clicked on organization in table: {org_name}")
                 time.sleep(5)
                 return True
             except:
-                logger.error(f"Could not find organization '{org_name}'")
-                return False
-        else:
-            # Use org selector dropdown
-            try:
-                org_selector = self.wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".org-selector, [class*='org-selector']"))
-                )
-                org_selector.click()
-                time.sleep(2)
-                
-                org_element = self.wait.until(
-                    EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{org_name}')]"))
-                )
-                org_element.click()
-                logger.info(f"Selected organization: {org_name}")
-                time.sleep(3)
-                return True
-            except:
-                logger.error(f"Could not select organization '{org_name}'")
-                return False
+                logger.error(f"Could not find organization '{org_name}' in table")
+        
+        # Method 3: Try to navigate to organizations page first
+        try:
+            logger.info("Attempting to navigate to organizations overview page")
+            # Look for "Organizations" or "All organizations" link
+            orgs_links = [
+                "//a[contains(text(), 'Organizations')]",
+                "//a[contains(text(), 'All organizations')]",
+                "//a[contains(text(), 'Switch organization')]",
+                "//a[contains(@href, '/organizations')]",
+            ]
+            
+            for xpath in orgs_links:
+                try:
+                    link = self.driver.find_element(By.XPATH, xpath)
+                    if link.is_displayed():
+                        link.click()
+                        logger.info(f"Clicked on organizations link: {link.text}")
+                        time.sleep(5)
+                        
+                        # Now try to find the org
+                        org_link = WebDriverWait(self.driver, 10).until(
+                            EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{org_name}')]"))
+                        )
+                        org_link.click()
+                        logger.info(f"Selected organization from list: {org_name}")
+                        time.sleep(5)
+                        return True
+                except:
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Failed to navigate to organizations page: {e}")
+        
+        # Method 4: Try using keyboard shortcut or menu
+        try:
+            # Some Meraki dashboards have keyboard shortcuts
+            logger.info("Trying alternative methods to switch organization")
+            
+            # Try to find any "Switch" or "Change" organization option
+            switch_options = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'Switch') or contains(text(), 'Change')]")
+            for option in switch_options:
+                if option.is_displayed() and "organization" in option.text.lower():
+                    option.click()
+                    time.sleep(2)
+                    
+                    # Look for the org again
+                    org_element = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{org_name}')]"))
+                    )
+                    org_element.click()
+                    logger.info(f"Selected organization via switch option: {org_name}")
+                    time.sleep(5)
+                    return True
+        except:
+            pass
+        
+        # If all methods failed
+        logger.error(f"All methods failed to select organization '{org_name}'")
+        self.save_debug_info(f"failed_select_org_{org_name.replace(' ', '_')}", save_html=True)
+        
+        # Check if user has access to the organization
+        logger.error("Possible reasons for failure:")
+        logger.error("1. The user account doesn't have access to the target organization")
+        logger.error("2. The organization name might be slightly different (check capitalization/spacing)")
+        logger.error("3. You might need to log in with different credentials for the target organization")
+        
+        return False
     
     def select_network(self, network_name: str) -> bool:
         """Select a specific network from the organization"""
@@ -1916,88 +2063,212 @@ class MerakiUIAutomation:
             
             time.sleep(3)
             
-            # Click claim button
+            # Take screenshot to see the page
+            self.save_debug_info("inventory_page_before_claim", save_html=True)
+            
+            # First look for the main Claim button to open the claim dialog
             claim_btn = None
-            claim_methods = [
+            claim_button_methods = [
                 (By.XPATH, "//button[contains(text(), 'Claim')]"),
-                (By.XPATH, "//button[contains(., 'Claim')]"),
-                (By.XPATH, "//a[contains(text(), 'Claim')]"),
-                (By.CSS_SELECTOR, "button[class*='claim']")
+                (By.CSS_SELECTOR, "button.claim"),
+                (By.CSS_SELECTOR, "button[class*='claim']"),
+                (By.XPATH, "//button[contains(@class, 'primary')]"),
             ]
             
-            for method, selector in claim_methods:
+            for method, selector in claim_button_methods:
                 try:
-                    claim_btn = self.wait.until(EC.element_to_be_clickable((method, selector)))
-                    break
-                except TimeoutException:
+                    buttons = self.driver.find_elements(method, selector)
+                    for btn in buttons:
+                        if btn.is_displayed() and btn.is_enabled():
+                            btn_text = btn.text
+                            if "claim" in btn_text.lower() or btn_text in ["Add", "+"]:
+                                claim_btn = btn
+                                logger.info(f"Found claim button: '{btn_text}'")
+                                break
+                    if claim_btn:
+                        break
+                except:
                     continue
             
-            if not claim_btn:
-                logger.error("Could not find Claim button")
+            if claim_btn:
+                # Click the main claim button
+                try:
+                    claim_btn.click()
+                except:
+                    self.driver.execute_script("arguments[0].click();", claim_btn)
+                logger.info("Clicked main claim button")
+                time.sleep(3)
+            else:
+                logger.warning("No main claim button found, looking for direct claim options")
+            
+            # Now look for "Claim individual devices" link/button
+            claim_individual_link = None
+            individual_claim_methods = [
+                (By.XPATH, "//a[contains(text(), 'Claim individual devices')]"),
+                (By.XPATH, "//button[contains(text(), 'Claim individual devices')]"),
+                (By.PARTIAL_LINK_TEXT, "Claim individual devices"),
+                (By.XPATH, "//*[contains(text(), 'Claim individual devices')]"),
+            ]
+            
+            for method, selector in individual_claim_methods:
+                try:
+                    elements = self.driver.find_elements(method, selector)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            claim_individual_link = elem
+                            logger.info(f"Found 'Claim individual devices' element: {elem.tag_name}")
+                            break
+                    if claim_individual_link:
+                        break
+                except:
+                    continue
+            
+            if not claim_individual_link:
+                logger.error("Could not find 'Claim individual devices' option")
+                # Log what's visible on the page
+                try:
+                    page_text = self.driver.find_element(By.TAG_NAME, "body").text
+                    if "claim order" in page_text.lower():
+                        logger.info("Found 'Claim order' option on page")
+                    if "individual" in page_text.lower():
+                        logger.info("Found 'individual' text on page")
+                except:
+                    pass
+                self.save_debug_info("no_individual_claim_option", save_html=True)
                 return False
             
-            claim_btn.click()
+            # Click "Claim individual devices"
+            try:
+                claim_individual_link.click()
+            except:
+                self.driver.execute_script("arguments[0].click();", claim_individual_link)
+            logger.info("Clicked 'Claim individual devices'")
+            time.sleep(3)
             
-            # Enter serials
-            logger.info(f"Claiming {len(device_serials)} devices")
+            # Now we should see the textarea for entering serials
+            logger.info(f"Looking for text area to enter {len(device_serials)} device serials")
             serials_field = None
+            
+            # Based on screenshot, the textarea has specific text about entering serials
             serial_field_methods = [
-                (By.XPATH, "//textarea[@placeholder='Enter serials']"),
-                (By.XPATH, "//textarea[contains(@placeholder, 'serial')]"),
-                (By.XPATH, "//textarea[contains(@placeholder, 'Serial')]"),
-                (By.CSS_SELECTOR, "textarea[placeholder*='serial' i]"),
-                (By.TAG_NAME, "textarea")
+                (By.XPATH, "//textarea[contains(@placeholder, 'Device Cloud ID')]"),
+                (By.XPATH, "//textarea[contains(@placeholder, 'serial number')]"),
+                (By.XPATH, "//textarea[contains(@placeholder, 'one per line')]"),
+                (By.XPATH, "//textarea"),
+                (By.CSS_SELECTOR, "textarea"),
+                (By.TAG_NAME, "textarea"),
             ]
             
             for method, selector in serial_field_methods:
                 try:
-                    serials_field = self.wait.until(EC.presence_of_element_located((method, selector)))
-                    break
-                except TimeoutException:
+                    elements = self.driver.find_elements(method, selector)
+                    for elem in elements:
+                        if elem.is_displayed():
+                            placeholder = elem.get_attribute('placeholder') or ''
+                            logger.info(f"Found textarea with placeholder: '{placeholder}'")
+                            serials_field = elem
+                            break
+                    if serials_field:
+                        break
+                except:
                     continue
             
             if not serials_field:
                 logger.error("Could not find serials input field")
+                self.save_debug_info("no_serials_textarea", save_html=True)
                 return False
             
-            serials_field.send_keys('\n'.join(device_serials))
+            # Clear and enter the serial numbers
+            serials_field.clear()
+            # Enter serials one per line
+            for i, serial in enumerate(device_serials):
+                if i > 0:
+                    serials_field.send_keys(Keys.RETURN)
+                serials_field.send_keys(serial)
             
-            # Submit claim
+            logger.info(f"Entered {len(device_serials)} serial numbers")
+            time.sleep(2)
+            
+            # Look for the "Claim devices" button (based on screenshot)
             submit_btn = None
             submit_methods = [
-                (By.XPATH, "//button[contains(text(), 'Claim')]"),
-                (By.XPATH, "//button[contains(text(), 'Submit')]"),
-                (By.XPATH, "//button[contains(text(), 'Add')]"),
-                (By.CSS_SELECTOR, "button[type='submit']")
+                (By.XPATH, "//button[text()='Claim devices']"),
+                (By.XPATH, "//button[contains(text(), 'Claim devices')]"),
+                (By.CSS_SELECTOR, "button.primary"),
+                (By.CSS_SELECTOR, "button[class*='primary']"),
+                (By.XPATH, "//button[contains(@class, 'btn-primary')]"),
             ]
             
             for method, selector in submit_methods:
                 try:
                     buttons = self.driver.find_elements(method, selector)
-                    # Find the submit button (not the initial claim button)
                     for btn in buttons:
-                        if btn != claim_btn and btn.is_displayed() and btn.is_enabled():
-                            submit_btn = btn
-                            break
+                        if btn.is_displayed() and btn.is_enabled():
+                            btn_text = btn.text
+                            if "claim" in btn_text.lower():
+                                submit_btn = btn
+                                logger.info(f"Found submit button: '{btn_text}'")
+                                break
                     if submit_btn:
                         break
-                except Exception:
+                except:
                     continue
             
             if not submit_btn:
-                logger.error("Could not find submit button")
+                logger.error("Could not find 'Claim devices' submit button")
+                # Try to find any visible button
+                all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
+                for btn in all_buttons:
+                    if btn.is_displayed() and btn.text:
+                        logger.info(f"Visible button: '{btn.text}'")
+                self.save_debug_info("no_submit_button", save_html=True)
                 return False
             
-            submit_btn.click()
+            # Click submit
+            try:
+                submit_btn.click()
+            except:
+                self.driver.execute_script("arguments[0].click();", submit_btn)
+                
+            logger.info(f"Clicked submit button: '{submit_btn.text}'")
             
-            # Wait for success
-            time.sleep(5)
+            # Wait for claim to process
+            time.sleep(10)
             
-            logger.info(f"Successfully claimed {len(device_serials)} devices")
+            # Check for success
+            try:
+                # Check for success message or if we're back at inventory
+                page_text = self.driver.find_element(By.TAG_NAME, "body").text
+                current_url = self.driver.current_url
+                
+                success_indicators = [
+                    "successfully claimed",
+                    "has been claimed",
+                    "added to organization",
+                    "devices claimed",
+                    "claim successful"
+                ]
+                
+                if any(indicator in page_text.lower() for indicator in success_indicators):
+                    logger.info("Claim appears to have succeeded based on page content")
+                elif "/inventory" in current_url:
+                    # Check if devices now appear in inventory
+                    devices_found = sum(1 for serial in device_serials if serial in page_text)
+                    if devices_found > 0:
+                        logger.info(f"Found {devices_found}/{len(device_serials)} devices in inventory after claim")
+                    else:
+                        logger.info("Returned to inventory page, claim likely succeeded")
+                else:
+                    logger.warning("Could not confirm claim success")
+            except:
+                pass
+            
+            logger.info(f"Claim operation completed for {len(device_serials)} devices")
             return True
             
         except Exception as e:
             logger.error(f"Failed to claim devices: {e}")
+            self.save_debug_info("claim_failed_exception", save_html=True)
             return False
 
 
@@ -2035,6 +2306,7 @@ class ComprehensiveRestore:
         """Restore network-level settings"""
         logger.info("Restoring network-level settings...")
         restored_count = 0
+        failed_count = 0
         
         # Restore switch settings
         switch_settings = settings.get("switch", {})
@@ -2048,16 +2320,29 @@ class ComprehensiveRestore:
                 restored_count += 1
             except Exception as e:
                 logger.error(f"Failed to restore STP: {e}")
+                failed_count += 1
         
         # MTU
         if switch_settings.get("mtu"):
             try:
+                # MTU might need specific values or might not be supported
+                mtu_data = switch_settings["mtu"]
+                # Remove any read-only fields
+                if 'warnings' in mtu_data:
+                    del mtu_data['warnings']
+                if 'errors' in mtu_data:
+                    del mtu_data['errors']
+                    
                 self.api._api_call("PUT", f"/networks/{network_id}/switch/mtu", 
-                                  data=switch_settings["mtu"])
+                                  data=mtu_data)
                 logger.info("Restored MTU settings")
                 restored_count += 1
             except Exception as e:
-                logger.error(f"Failed to restore MTU: {e}")
+                if "400" in str(e):
+                    logger.warning(f"MTU settings not applicable to this network type: {e}")
+                else:
+                    logger.error(f"Failed to restore MTU: {e}")
+                failed_count += 1
         
         # DHCP Server Policy
         if switch_settings.get("dhcpServerPolicy"):
@@ -2068,6 +2353,7 @@ class ComprehensiveRestore:
                 restored_count += 1
             except Exception as e:
                 logger.error(f"Failed to restore DHCP server policy: {e}")
+                failed_count += 1
         
         # Storm Control
         if switch_settings.get("stormControl"):
@@ -2078,6 +2364,7 @@ class ComprehensiveRestore:
                 restored_count += 1
             except Exception as e:
                 logger.error(f"Failed to restore storm control: {e}")
+                failed_count += 1
         
         # Access Policies
         if switch_settings.get("accessPolicies"):
@@ -2090,6 +2377,7 @@ class ComprehensiveRestore:
                 restored_count += 1
             except Exception as e:
                 logger.error(f"Failed to restore access policies: {e}")
+                failed_count += 1
         
         # QoS Rules
         if switch_settings.get("qosRules"):
@@ -2102,6 +2390,7 @@ class ComprehensiveRestore:
                 restored_count += 1
             except Exception as e:
                 logger.error(f"Failed to restore QoS rules: {e}")
+                failed_count += 1
         
         # Port Schedules
         if switch_settings.get("portSchedules"):
@@ -2114,6 +2403,7 @@ class ComprehensiveRestore:
                 restored_count += 1
             except Exception as e:
                 logger.error(f"Failed to restore port schedules: {e}")
+                failed_count += 1
         
         # Monitoring settings
         monitoring_settings = settings.get("monitoring", {})
@@ -2121,12 +2411,22 @@ class ComprehensiveRestore:
         # SNMP
         if monitoring_settings.get("snmp"):
             try:
+                # SNMP might have specific requirements
+                snmp_data = monitoring_settings["snmp"]
+                # Ensure required fields are present
+                if 'access' not in snmp_data:
+                    snmp_data['access'] = 'none'
+                    
                 self.api._api_call("PUT", f"/networks/{network_id}/snmp", 
-                                  data=monitoring_settings["snmp"])
+                                  data=snmp_data)
                 logger.info("Restored SNMP settings")
                 restored_count += 1
             except Exception as e:
-                logger.error(f"Failed to restore SNMP: {e}")
+                if "400" in str(e):
+                    logger.warning(f"SNMP settings may need adjustment for this network: {e}")
+                else:
+                    logger.error(f"Failed to restore SNMP: {e}")
+                failed_count += 1
         
         # Syslog
         if monitoring_settings.get("syslog"):
@@ -2138,6 +2438,7 @@ class ComprehensiveRestore:
                 restored_count += 1
             except Exception as e:
                 logger.error(f"Failed to restore syslog servers: {e}")
+                failed_count += 1
         
         # Alerts
         if monitoring_settings.get("alerts"):
@@ -2148,8 +2449,12 @@ class ComprehensiveRestore:
                 restored_count += 1
             except Exception as e:
                 logger.error(f"Failed to restore alerts: {e}")
+                failed_count += 1
         
-        logger.info(f"Restored {restored_count} network-level settings")
+        logger.info(f"Restored {restored_count} network-level settings successfully")
+        if failed_count > 0:
+            logger.warning(f"Failed to restore {failed_count} network-level settings")
+            logger.warning("Some settings may not be applicable to the new network or may need manual configuration")
     
     def _restore_device_settings(self, device_settings: Dict, device_mapping: Dict):
         """Restore device-specific settings"""
@@ -2170,13 +2475,26 @@ class ComprehensiveRestore:
             if settings.get("management"):
                 try:
                     mgmt_data = {k: v for k, v in settings["management"].items() 
-                               if k not in ["ddnsHostnames", "wan1", "wan2"]}
+                               if k not in ["ddnsHostnames", "wan1", "wan2", "serial", "mac"]}
+                    
+                    # Check if device is online before trying to configure
+                    try:
+                        device_status = self.api._api_call("GET", f"/devices/{new_serial}")
+                        if device_status and device_status.get('status') != 'online':
+                            logger.warning(f"  ⚠ Device {new_serial} is {device_status.get('status', 'offline')}, skipping management interface")
+                            continue
+                    except:
+                        pass
+                    
                     self.api._api_call("PUT", f"/devices/{new_serial}/managementInterface", 
                                       data=mgmt_data)
                     logger.info(f"  ✓ Restored management interface for {new_serial}")
                     restored_items += 1
                 except Exception as e:
-                    logger.error(f"  ✗ Failed to restore management interface: {e}")
+                    if "400" in str(e):
+                        logger.warning(f"  ⚠ Management interface settings may not be applicable: {e}")
+                    else:
+                        logger.error(f"  ✗ Failed to restore management interface: {e}")
             
             # Restore switch ports
             if settings.get("ports"):
@@ -2337,7 +2655,26 @@ class AutomatedMigrationTool:
             logger.warning("⚠ Failed to add some devices to network - they may need to be added manually")
         
         # Wait for devices to be ready
-        time.sleep(10)
+        logger.info("Waiting 30 seconds for devices to come online in the new network...")
+        time.sleep(30)
+        
+        # Verify devices are online before restoring settings
+        try:
+            devices_in_network = self.target_api.get_devices(target_network_id)
+            online_devices = []
+            for device in devices_in_network:
+                if device.get('status') == 'online':
+                    online_devices.append(device['serial'])
+                else:
+                    logger.warning(f"Device {device['serial']} status: {device.get('status', 'unknown')}")
+            
+            logger.info(f"{len(online_devices)}/{len(device_serials)} devices are online")
+            
+            if len(online_devices) == 0:
+                logger.warning("No devices are online yet. Settings restoration may fail.")
+                logger.info("You may need to wait for devices to come online and run restoration separately.")
+        except:
+            logger.warning("Could not check device status")
         
         # Step 5: Restore settings
         logger.info("\nSTEP 5: Restoring all network and device settings")
