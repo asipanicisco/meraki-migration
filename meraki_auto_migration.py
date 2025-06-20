@@ -2,6 +2,7 @@
 """
 Meraki Network Migration Tool with UI Automation
 Complete migration with explicit org/network names and IDs
+Fixed version incorporating working methods from debug.py
 """
 
 import json
@@ -27,7 +28,7 @@ import signal
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Changed to DEBUG for more detailed logs
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(f'meraki_migration_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 # Set specific loggers to WARNING to reduce noise
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("selenium").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 
 
 class MerakiAPIClient:
@@ -605,7 +607,7 @@ class MerakiUIAutomation:
                 else:
                     self.driver = webdriver.Chrome(options=options)
                 
-                self.wait = WebDriverWait(self.driver, 20)
+                self.wait = WebDriverWait(self.driver, 30)
                 logger.info("Chrome driver initialized successfully")
                 break
                 
@@ -622,6 +624,19 @@ class MerakiUIAutomation:
                     logger.error("  sudo apt-get install -y google-chrome-stable chromium-chromedriver")
                     raise
     
+    def save_debug_info(self, step: str, save_html: bool = False):
+        """Save screenshot and optionally HTML for debugging"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        screenshot_file = f"migration_debug_{step}_{timestamp}.png"
+        self.driver.save_screenshot(screenshot_file)
+        logger.info(f"Screenshot saved: {screenshot_file}")
+        
+        if save_html:
+            html_file = f"migration_debug_{step}_{timestamp}.html"
+            with open(html_file, 'w', encoding='utf-8') as f:
+                f.write(self.driver.page_source)
+            logger.info(f"HTML saved: {html_file}")
+    
     def wait_for_page_load(self, timeout=10):
         """Wait for page to finish loading"""
         try:
@@ -636,149 +651,57 @@ class MerakiUIAutomation:
         """Login to Meraki Dashboard"""
         logger.info("Logging into Meraki Dashboard")
         self.driver.get("https://dashboard.meraki.com")
-        time.sleep(2)  # Reduced from implicit waits
+        time.sleep(3)
         
-        # Enter username
-        logger.info("Entering username...")
-        username_field = None
-        username_selectors = [
-            (By.ID, "email"),
-            (By.ID, "Email"),
-            (By.NAME, "email"),
-            (By.NAME, "Email"),
-            (By.CSS_SELECTOR, "input[type='email']"),
-            (By.CSS_SELECTOR, "input[type='text'][name='email' i]")
-        ]
+        # Enter email
+        email_field = self.wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email'], input#email, input#Email"))
+        )
+        email_field.send_keys(self.username)
+        email_field.send_keys(Keys.RETURN)
+        time.sleep(3)
         
-        for selector_type, selector_value in username_selectors:
-            try:
-                username_field = WebDriverWait(self.driver, 5).until(  # Reduced timeout
-                    EC.presence_of_element_located((selector_type, selector_value))
-                )
-                logger.debug(f"Found username field with {selector_type}='{selector_value}'")
-                break
-            except TimeoutException:
-                continue
-        
-        if not username_field:
-            raise Exception("Could not find username/email field")
-        
-        username_field.send_keys(self.username)
-        username_field.send_keys(Keys.RETURN)
-        
-        # Wait and enter password
-        time.sleep(2)  # Reduced wait
-        logger.info("Entering password...")
-        password_field = None
-        password_selectors = [
-            (By.ID, "password"),
-            (By.ID, "Password"),
-            (By.NAME, "password"),
-            (By.NAME, "Password"),
-            (By.CSS_SELECTOR, "input[type='password']"),
-            (By.CSS_SELECTOR, "input[type='password'][name='password' i]"),
-            (By.CSS_SELECTOR, "input[type='password'][name='Password' i]")
-        ]
-        
-        for selector_type, selector_value in password_selectors:
-            try:
-                password_field = WebDriverWait(self.driver, 5).until(  # Reduced timeout
-                    EC.presence_of_element_located((selector_type, selector_value))
-                )
-                logger.debug(f"Found password field with {selector_type}='{selector_value}'")
-                break
-            except TimeoutException:
-                continue
-        
-        if not password_field:
-            self.driver.save_screenshot(f"login_error_{int(time.time())}.png")
-            raise Exception("Could not find password field")
-        
+        # Enter password
+        password_field = self.wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='password'], input#password, input#Password"))
+        )
         password_field.send_keys(self.password)
         password_field.send_keys(Keys.RETURN)
         
-        # Check for 2FA/verification code with shorter timeout
-        time.sleep(2)  # Reduced from 3
+        # Handle 2FA if needed
+        time.sleep(5)
         self._handle_2fa_if_needed()
         
         # Wait for dashboard to load
-        logger.info("Waiting for dashboard to load...")
-        dashboard_loaded = False
-        dashboard_indicators = [
-            (By.CLASS_NAME, "main-navigation"),
-            (By.CLASS_NAME, "nav-bar"),
-            (By.XPATH, "//span[text()='Organization']"),
-            (By.XPATH, "//a[contains(@href, '/organization')]"),
-            # Add more specific indicators
-            (By.CSS_SELECTOR, "[class*='navbar']"),
-            (By.CSS_SELECTOR, "[class*='navigation']"),
-            (By.XPATH, "//nav"),
-        ]
+        try:
+            self.wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".main-navigation, .nav-bar, [href*='/organization']"))
+            )
+            logger.info("Successfully logged in")
+        except TimeoutException:
+            self.save_debug_info("login_failed")
+            raise Exception("Dashboard did not load after login")
         
-        # Single attempt with reasonable timeout
-        for selector_type, selector_value in dashboard_indicators:
-            try:
-                WebDriverWait(self.driver, 10).until(  # Reduced from 20
-                    EC.presence_of_element_located((selector_type, selector_value))
-                )
-                dashboard_loaded = True
-                logger.debug(f"Dashboard loaded, found element: {selector_type}='{selector_value}'")
-                break
-            except TimeoutException:
-                continue
-        
-        if not dashboard_loaded:
-            # Check if we're still on login page
-            if "login" in self.driver.current_url.lower() or "account.meraki.com" in self.driver.current_url:
-                self.driver.save_screenshot(f"login_failed_{int(time.time())}.png")
-                raise Exception("Login failed - still on login page")
-            else:
-                # We might be logged in but with a different page structure
-                logger.warning("Could not find standard dashboard elements, but URL suggests login succeeded")
-                logger.info(f"Current URL: {self.driver.current_url}")
-        
-        logger.info("Successfully logged in")
-        time.sleep(2)  # Reduced from 3
+        time.sleep(3)
     
     def _handle_2fa_if_needed(self):
         """Handle 2FA verification if required"""
-        logger.info("Checking for 2FA...")
-        
-        # Quick check if we're already on dashboard
-        current_url = self.driver.current_url
-        if "dashboard" in current_url and "login" not in current_url:
-            logger.info("Already on dashboard, skipping 2FA check")
-            return
-        
         try:
-            # Use shorter timeout for 2FA check
+            # Look for verification code field
             verification_field = None
-            verification_selectors = [
-                (By.ID, "code"),
-                (By.ID, "Code"),
-                (By.NAME, "code"),
-                (By.CSS_SELECTOR, "input[type='text'][placeholder*='code' i]"),
-                (By.CSS_SELECTOR, "input[type='number']")
-            ]
-            
-            # Quick check with short timeout
-            for selector_type, selector_value in verification_selectors:
-                try:
-                    elements = WebDriverWait(self.driver, 3).until(  # Reduced from 10
-                        EC.presence_of_all_elements_located((selector_type, selector_value))
-                    )
-                    for elem in elements:
-                        if elem.is_displayed() and elem.get_attribute('type') != 'password':
-                            elem_id = elem.get_attribute('id') or ''
-                            elem_name = elem.get_attribute('name') or ''
-                            if 'email' not in elem_id.lower() and 'email' not in elem_name.lower():
-                                verification_field = elem
-                                logger.info(f"Found verification code field")
-                                break
-                    if verification_field:
-                        break
-                except TimeoutException:
-                    continue
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, "input[type='text']:not([type='password']), input[type='number']")
+                for elem in elements:
+                    if elem.is_displayed():
+                        elem_id = (elem.get_attribute('id') or '').lower()
+                        elem_name = (elem.get_attribute('name') or '').lower()
+                        elem_placeholder = (elem.get_attribute('placeholder') or '').lower()
+                        if ('code' in elem_id or 'code' in elem_name or 'code' in elem_placeholder or
+                            'verification' in elem_id or 'verification' in elem_name or 'verification' in elem_placeholder):
+                            verification_field = elem
+                            break
+            except:
+                pass
             
             if verification_field:
                 logger.info("=" * 60)
@@ -793,174 +716,159 @@ class MerakiUIAutomation:
                     verification_field.send_keys(verification_code)
                     
                     # Try to find and click submit button
-                    submit_clicked = False
-                    submit_selectors = [
-                        (By.XPATH, "//button[contains(text(), 'Verify')]"),
-                        (By.XPATH, "//button[contains(text(), 'Submit')]"),
-                        (By.CSS_SELECTOR, "button[type='submit']"),
-                    ]
-                    
-                    for selector_type, selector_value in submit_selectors:
-                        try:
-                            buttons = self.driver.find_elements(selector_type, selector_value)
-                            for btn in buttons:
-                                if btn.is_displayed() and btn.is_enabled():
-                                    btn.click()
-                                    logger.info(f"Clicked verification submit button")
-                                    submit_clicked = True
-                                    break
-                            if submit_clicked:
-                                break
-                        except Exception:
-                            continue
-                    
-                    if not submit_clicked:
+                    try:
+                        submit_btn = self.driver.find_element(By.CSS_SELECTOR, "button[type='submit'], button:not([disabled])")
+                        submit_btn.click()
+                    except:
                         verification_field.send_keys(Keys.RETURN)
-                        logger.info("Pressed Enter to submit verification code")
-                
-                logger.info("Waiting for verification to process...")
-                time.sleep(5)  # Reduced from 10
-                
-            else:
-                # Quick check if actually need 2FA
-                logger.info("No 2FA field detected")
-                time.sleep(2)  # Reduced from 5
-                
-                # Only prompt if we're still on login page
-                if "login" in self.driver.current_url.lower() or "account.meraki.com" in self.driver.current_url:
-                    if not self._is_dashboard_loaded():
-                        logger.info("=" * 60)
-                        logger.info("Manual 2FA may be required")
-                        logger.info("If you see a verification code field:")
-                        logger.info("1. Enter the code in the browser")
-                        logger.info("2. Click submit/verify")
-                        logger.info("=" * 60)
-                        input("Press Enter after completing 2FA (or if no 2FA is needed)...")
-                
+                    
+                    logger.info("Submitted verification code")
+                    time.sleep(10)
         except Exception as e:
-            logger.debug(f"Error during 2FA check: {e}")
-    
-    def _is_dashboard_loaded(self):
-        """Check if dashboard has loaded"""
-        dashboard_indicators = [
-            (By.CLASS_NAME, "main-navigation"),
-            (By.CLASS_NAME, "nav-bar"),
-            (By.XPATH, "//span[text()='Organization']"),
-            (By.XPATH, "//a[contains(@href, '/organization')]")
-        ]
-        
-        for selector_type, selector_value in dashboard_indicators:
-            try:
-                self.driver.find_element(selector_type, selector_value)
-                return True
-            except NoSuchElementException:
-                continue
-        return False
+            logger.debug(f"2FA check completed: {e}")
     
     def select_organization(self, org_name: str) -> bool:
         """Select organization by name"""
         logger.info(f"Selecting organization: {org_name}")
         
-        # Check if we're on the organizations overview page
         current_url = self.driver.current_url
+        
+        # If on organizations overview page
         if "/organizations" in current_url or "global_overview" in current_url:
-            # Click on organization in table
-            org_link_selectors = [
-                (By.LINK_TEXT, org_name),
-                (By.PARTIAL_LINK_TEXT, org_name),
-                (By.XPATH, f"//a[contains(text(), '{org_name}')]"),
-                (By.XPATH, f"//a[contains(., '{org_name}')]"),
-                (By.XPATH, f"//td[contains(text(), '{org_name}')]//a"),
-                (By.XPATH, f"//tr[contains(., '{org_name}')]//a"),
-            ]
-            
-            org_found = False
-            for method, selector in org_link_selectors:
-                try:
-                    org_element = self.wait.until(
-                        EC.element_to_be_clickable((method, selector))
-                    )
-                    org_element.click()
-                    logger.info(f"Clicked on organization: {org_name}")
-                    org_found = True
-                    break
-                except Exception:
-                    continue
-            
-            if not org_found:
-                logger.error(f"Could not find organization '{org_name}' in table")
+            try:
+                org_link = self.wait.until(
+                    EC.element_to_be_clickable((By.XPATH, f"//a[contains(text(), '{org_name}') or contains(., '{org_name}')]"))
+                )
+                org_link.click()
+                logger.info(f"Clicked on organization: {org_name}")
+                time.sleep(5)
+                return True
+            except:
+                logger.error(f"Could not find organization '{org_name}'")
                 return False
         else:
             # Use org selector dropdown
             try:
                 org_selector = self.wait.until(
-                    EC.element_to_be_clickable((By.CLASS_NAME, "org-selector"))
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".org-selector, [class*='org-selector']"))
                 )
                 org_selector.click()
+                time.sleep(2)
                 
-                # Find and click org
-                time.sleep(1)
-                org_found = False
-                org_elements = self.driver.find_elements(By.CLASS_NAME, "org-name")
-                for elem in org_elements:
-                    if org_name.lower() in elem.text.lower():
-                        elem.click()
-                        logger.info(f"Selected organization: {org_name}")
-                        org_found = True
-                        break
-                
-                if not org_found:
-                    logger.error(f"Organization '{org_name}' not found in dropdown")
-                    return False
-                    
-            except Exception as e:
-                logger.error(f"Failed to select organization: {e}")
+                org_element = self.wait.until(
+                    EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{org_name}')]"))
+                )
+                org_element.click()
+                logger.info(f"Selected organization: {org_name}")
+                time.sleep(3)
+                return True
+            except:
+                logger.error(f"Could not select organization '{org_name}'")
                 return False
-        
-        # Wait for page to load and verify we're in the right org
-        time.sleep(3)
-        self.wait_for_page_load()
-        
-        # Verify we successfully switched to the organization
-        new_url = self.driver.current_url
-        logger.info(f"New URL after org selection: {new_url}")
-        
-        return True
     
-    def navigate_to_switches(self, network_name: str) -> bool:
-        """Navigate to Network > Switches page"""
-        logger.info(f"Navigating to switches page for network: {network_name}")
+    def select_network(self, network_name: str) -> bool:
+        """Select a specific network from the organization"""
+        logger.info(f"Selecting network: {network_name}")
         
-        # First, find and click on the network
+        current_url = self.driver.current_url
+        
+        # Check if we need to go to networks list first
+        if "/manage/organization/" in current_url:
+            # We're in organization context, need to find networks
+            try:
+                # Look for Networks menu item or link
+                networks_link = None
+                network_selectors = [
+                    (By.XPATH, "//a[contains(text(), 'Networks')]"),
+                    (By.XPATH, "//span[contains(text(), 'Networks')]"),
+                    (By.XPATH, "//a[contains(@href, '/networks')]"),
+                    (By.LINK_TEXT, "Networks"),
+                ]
+                
+                for method, selector in network_selectors:
+                    try:
+                        networks_link = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((method, selector))
+                        )
+                        networks_link.click()
+                        logger.info("Clicked on Networks menu")
+                        time.sleep(3)
+                        break
+                    except:
+                        continue
+            except:
+                logger.info("Could not find Networks menu, trying direct approach")
+        
+        # Now find and click on the specific network
+        network_found = False
         network_selectors = [
             (By.XPATH, f"//a[contains(text(), '{network_name}')]"),
-            (By.XPATH, f"//span[contains(text(), '{network_name}')]"),
-            (By.PARTIAL_LINK_TEXT, network_name)
+            (By.XPATH, f"//td[contains(text(), '{network_name}')]//a"),
+            (By.XPATH, f"//tr[contains(., '{network_name}')]//a"),
+            (By.PARTIAL_LINK_TEXT, network_name),
         ]
         
-        network_found = False
         for method, selector in network_selectors:
             try:
-                network_element = WebDriverWait(self.driver, 5).until(
+                network_element = WebDriverWait(self.driver, 10).until(
                     EC.element_to_be_clickable((method, selector))
                 )
                 network_element.click()
                 network_found = True
                 logger.info(f"Clicked on network: {network_name}")
-                self.wait_for_page_load()
-                time.sleep(3)
+                time.sleep(5)
                 break
-            except Exception:
+            except:
                 continue
         
         if not network_found:
-            logger.error(f"Could not find network '{network_name}'")
+            # Try using the network selector dropdown if available
+            try:
+                # Look for network selector dropdown (second dropdown in header)
+                dropdowns = self.driver.find_elements(By.CSS_SELECTOR, ".mds-global-nav-select-button, button[class*='select']")
+                if len(dropdowns) >= 2:
+                    # Click the second dropdown (network selector)
+                    dropdowns[1].click()
+                    time.sleep(2)
+                    
+                    # Find and click the network
+                    network_option = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{network_name}')]"))
+                    )
+                    network_option.click()
+                    network_found = True
+                    logger.info(f"Selected network from dropdown: {network_name}")
+                    time.sleep(3)
+            except:
+                logger.warning("Could not use network dropdown selector")
+        
+        if not network_found:
+            logger.error(f"Could not find or select network '{network_name}'")
             return False
         
-        # Now we should be in the network context
-        # Try multiple methods to get to switches
+        # Verify we're in the network context
+        time.sleep(2)
+        new_url = self.driver.current_url
+        if "/n/" in new_url or network_name in self.driver.title:
+            logger.info(f"Successfully entered network context")
+            return True
+        else:
+            logger.warning("May not have successfully entered network context")
+            return True  # Continue anyway
+    
+    def navigate_to_switches(self, network_name: str) -> bool:
+        """Navigate to Network > Switches page"""
+        logger.info(f"Navigating to switches page for network: {network_name}")
         
-        # Method 1: Try direct URL manipulation
+        # First, select the network
+        if not self.select_network(network_name):
+            logger.error("Failed to select network")
+            return False
+        
+        # Take screenshot after network selection
+        self.save_debug_info("after_network_selection")
+        
+        # Now navigate to switches within the network context
         current_url = self.driver.current_url
         logger.info(f"Current URL after network selection: {current_url}")
         
@@ -969,130 +877,99 @@ class MerakiUIAutomation:
             logger.info("Already on switches page")
             return True
         
-        # Method 2: Look for "Switch" in the menu/navigation
-        switch_menu_selectors = [
-            # Top level menu items
-            (By.XPATH, "//span[text()='Switch']"),
-            (By.XPATH, "//span[text()='Switches']"),
-            (By.XPATH, "//a[text()='Switch']"),
-            (By.XPATH, "//a[text()='Switches']"),
-            # Menu items with icons
-            (By.XPATH, "//span[contains(text(), 'Switch')]"),
-            (By.XPATH, "//a[contains(text(), 'Switch')]"),
-            # Navigation links
-            (By.XPATH, "//nav//span[text()='Switch']"),
-            (By.XPATH, "//nav//a[text()='Switch']"),
-            # Sidebar navigation
-            (By.CSS_SELECTOR, "[class*='nav'].*[class*='switch']"),
-            (By.CSS_SELECTOR, "a[href*='/switches']"),
-            (By.CSS_SELECTOR, "a[href*='/nodes']"),
-            # Try broader selectors
-            (By.XPATH, "//*[contains(@class, 'navigation')]//span[contains(text(), 'Switch')]"),
-            (By.XPATH, "//*[contains(@class, 'menu')]//span[contains(text(), 'Switch')]"),
-        ]
-        
-        # First, check if we need to click on a parent menu item
-        for method, selector in switch_menu_selectors:
+        try:
+            # Method 1: Try to find Switching/Switch menu
             try:
-                switch_element = WebDriverWait(self.driver, 3).until(
-                    EC.element_to_be_clickable((method, selector))
-                )
-                logger.info(f"Found switch menu element: {switch_element.text}")
-                switch_element.click()
-                self.wait_for_page_load()
-                time.sleep(2)
-                
-                # Check if we're now on switches page
-                if "/switches" in self.driver.current_url or "/nodes" in self.driver.current_url:
-                    logger.info("Successfully navigated to switches page")
-                    return True
-                    
-                # If not, look for a submenu item
-                submenu_selectors = [
-                    (By.XPATH, "//a[text()='List']"),
-                    (By.XPATH, "//a[contains(text(), 'Switches')]"),
-                    (By.XPATH, "//a[contains(@href, '/nodes/list')]"),
-                    (By.XPATH, "//a[contains(@href, '/switches')]"),
+                switch_menu_selectors = [
+                    (By.XPATH, "//span[contains(text(), 'Switching')]"),
+                    (By.XPATH, "//span[contains(text(), 'Switch')]"),
+                    (By.XPATH, "//a[contains(text(), 'Switch')]"),
                 ]
                 
-                for sub_method, sub_selector in submenu_selectors:
+                for method, selector in switch_menu_selectors:
                     try:
-                        submenu = WebDriverWait(self.driver, 2).until(
-                            EC.element_to_be_clickable((sub_method, sub_selector))
+                        switch_menu = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((method, selector))
                         )
-                        submenu.click()
-                        self.wait_for_page_load()
+                        switch_menu.click()
+                        logger.info("Clicked on Switch/Switching menu")
                         time.sleep(2)
                         
-                        if "/switches" in self.driver.current_url or "/nodes" in self.driver.current_url:
-                            logger.info("Successfully navigated to switches page via submenu")
-                            return True
+                        # Look for Switches submenu
+                        switches_link_selectors = [
+                            (By.XPATH, "//a[contains(text(), 'Switches')]"),
+                            (By.XPATH, "//a[contains(text(), 'List')]"),
+                            (By.LINK_TEXT, "Switches"),
+                        ]
+                        
+                        for sub_method, sub_selector in switches_link_selectors:
+                            try:
+                                switches_link = WebDriverWait(self.driver, 3).until(
+                                    EC.element_to_be_clickable((sub_method, sub_selector))
+                                )
+                                switches_link.click()
+                                logger.info("Clicked on Switches submenu")
+                                time.sleep(3)
+                                return True
+                            except:
+                                continue
+                                
                     except:
                         continue
                         
             except Exception as e:
-                logger.debug(f"Switch menu not found with {method}: {str(e)}")
-                continue
-        
-        # Method 3: Try to construct the URL if we can extract the network ID
-        if "/n/" in current_url or "/networks/" in current_url:
-            import re
-            # Try to extract network ID from current URL
-            network_id_patterns = [
-                r'/n/([^/]+)/',
-                r'/networks/([^/]+)/',
-                r'/(N_[^/]+)/',
-                r'/(L_[^/]+)/'
-            ]
+                logger.warning(f"Menu navigation failed: {e}")
             
-            network_id = None
-            for pattern in network_id_patterns:
-                match = re.search(pattern, current_url)
+            # Method 2: Try direct URL navigation if we have network ID
+            if "/n/" in current_url:
+                # Extract network ID and construct URL
+                import re
+                match = re.search(r'/n/([^/]+)', current_url)
                 if match:
                     network_id = match.group(1)
-                    logger.info(f"Extracted network ID: {network_id}")
-                    break
-            
-            if network_id:
-                # Try different URL patterns for switches
-                base_url = current_url.split('/n/')[0] if '/n/' in current_url else current_url.split('/networks/')[0]
-                
-                url_patterns = [
-                    f"{base_url}/n/{network_id}/manage/switches",
-                    f"{base_url}/networks/{network_id}/manage/switches",
-                    f"{base_url}/{network_id}/manage/switches",
-                    f"{base_url}/n/{network_id}/manage/switch/switches",
-                ]
-                
-                for url in url_patterns:
-                    logger.info(f"Trying URL: {url}")
-                    self.driver.get(url)
-                    self.wait_for_page_load()
-                    time.sleep(2)
+                    base_url = current_url.split('/n/')[0]
                     
-                    # Check if we successfully navigated
-                    if "/switches" in self.driver.current_url or "/switch" in self.driver.current_url:
-                        logger.info("Successfully navigated to switches page via URL")
-                        return True
-        
-        # If all methods failed, log available elements for debugging
-        logger.error("Could not navigate to switches page")
-        logger.error("Available navigation elements:")
-        try:
-            nav_elements = self.driver.find_elements(By.XPATH, "//nav//*[contains(@class, 'nav')]")
-            for elem in nav_elements[:10]:
-                if elem.text:
-                    logger.error(f"  - {elem.text}")
-        except:
-            pass
+                    # Try different URL patterns
+                    url_patterns = [
+                        f"{base_url}/n/{network_id}/manage/switches",
+                        f"{base_url}/n/{network_id}/manage/switch/switches",
+                    ]
+                    
+                    for url in url_patterns:
+                        logger.info(f"Trying URL: {url}")
+                        self.driver.get(url)
+                        time.sleep(3)
+                        
+                        # Check if we successfully navigated
+                        new_url = self.driver.current_url
+                        if any(x in new_url for x in ["/switches", "/switch", "/nodes"]):
+                            logger.info("Successfully navigated to switches page via URL")
+                            return True
             
+            # Method 3: Look for any switches-related links on the page
+            logger.info("Looking for switches-related links on the page...")
+            switches_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, 'switches') or contains(@href, 'switch') or contains(@href, 'nodes')]")
+            for link in switches_links:
+                if link.is_displayed():
+                    href = link.get_attribute('href')
+                    link_text = link.text
+                    logger.info(f"Found link: {link_text} -> {href}")
+                    if any(x in href for x in ['/switches', '/switch', '/nodes']):
+                        link.click()
+                        time.sleep(3)
+                        return True
+            
+        except Exception as e:
+            logger.error(f"All navigation methods failed: {e}")
+            self.save_debug_info("switches_navigation_failed")
+        
         return False
     
     def remove_devices_from_network(self, org_name: str, network_name: str, device_serials: List[str]) -> bool:
         """Remove devices from network before unclaiming"""
         logger.info(f"Removing {len(device_serials)} devices from network '{network_name}'")
         
-        # Navigate to switches page
+        # Navigate to switches page (this now includes network selection)
         if not self.navigate_to_switches(network_name):
             logger.error("Failed to navigate to switches page")
             return False
@@ -1100,269 +977,332 @@ class MerakiUIAutomation:
         # Wait for page to fully load
         time.sleep(5)
         
-        # The strategy: Search for each device individually, select it, then remove all at once
-        logger.info("Selecting devices for removal using search")
-        selected_count = 0
+        # Take screenshot and save HTML to see current state
+        self.save_debug_info("switches_page", save_html=True)
         
-        # Find the search box first
+        # Log the current page URL and title
+        logger.info(f"Current URL: {self.driver.current_url}")
+        logger.info(f"Page title: {self.driver.title}")
+        
+        # Check if we're on the right page by looking for table headers
+        try:
+            table_headers = self.driver.find_elements(By.CSS_SELECTOR, "th, thead td")
+            if table_headers:
+                logger.info("Table headers found:")
+                for header in table_headers[:10]:  # Log first 10 headers
+                    if header.text:
+                        logger.info(f"  - {header.text}")
+        except:
+            logger.warning("Could not find table headers")
+        
+        # Close any open menus by clicking on the main content area
+        try:
+            # Click on the main content area to close any hovering menus
+            main_content = self.driver.find_element(By.CSS_SELECTOR, "main, .main-content, #main-content, [role='main']")
+            self.driver.execute_script("arguments[0].click();", main_content)
+            time.sleep(1)
+        except:
+            # Alternative: click on the page title or header
+            try:
+                page_title = self.driver.find_element(By.CSS_SELECTOR, "h1, .page-title, .switches-title")
+                page_title.click()
+                time.sleep(1)
+            except:
+                pass
+        
+        # Search for device if search box exists
         search_box = None
         search_selectors = [
-            (By.CSS_SELECTOR, "input[type='search']"),
-            (By.CSS_SELECTOR, "input[placeholder*='Search' i]"),
-            (By.XPATH, "//input[@type='search']"),
-            (By.XPATH, "//input[contains(@placeholder, 'Search')]"),
-            (By.CSS_SELECTOR, "input.search-box"),
+            # Look for the search box specifically in the table area, not the global search
+            (By.CSS_SELECTOR, "div.table-search input[type='search']"),
+            (By.CSS_SELECTOR, "div.switches-table input[type='search']"),
+            (By.CSS_SELECTOR, "section input[type='search']"),
+            (By.CSS_SELECTOR, "main input[type='search']"),
+            # Look for search box that's NOT in the header/navigation
+            (By.XPATH, "//main//input[@type='search']"),
+            (By.XPATH, "//section//input[@type='search']"),
+            # Look for search box near the table
+            (By.XPATH, "//table/ancestor::div//input[@type='search']"),
+            # Try to find by placeholder that's specific to table search
+            (By.CSS_SELECTOR, "input[placeholder*='MAC' i], input[placeholder*='name' i], input[placeholder*='serial' i]"),
         ]
         
+        # First, let's find ALL search boxes and log them
+        all_search_boxes = self.driver.find_elements(By.CSS_SELECTOR, "input[type='search']")
+        logger.info(f"Found {len(all_search_boxes)} search boxes on page")
+        for i, box in enumerate(all_search_boxes):
+            placeholder = box.get_attribute('placeholder') or 'No placeholder'
+            is_displayed = box.is_displayed()
+            parent_class = box.find_element(By.XPATH, "..").get_attribute('class') or 'No class'
+            logger.debug(f"Search box {i}: placeholder='{placeholder}', displayed={is_displayed}, parent_class='{parent_class}'")
+        
+        # Now try to find the RIGHT search box (not the global one)
         for method, selector in search_selectors:
             try:
-                search_box = self.driver.find_element(method, selector)
-                if search_box.is_displayed():
-                    logger.info(f"Found search box using {method}")
+                elements = self.driver.find_elements(method, selector)
+                for element in elements:
+                    # Skip if it's the global search (usually has placeholder about searching everything)
+                    placeholder = element.get_attribute('placeholder') or ''
+                    if 'everything' in placeholder.lower() or 'global' in placeholder.lower():
+                        continue
+                    # Skip if it's in the header/nav
+                    try:
+                        nav_parent = element.find_element(By.XPATH, "ancestor::nav")
+                        continue  # Skip this one, it's in navigation
+                    except:
+                        pass  # Good, not in nav
+                    
+                    if element.is_displayed():
+                        search_box = element
+                        logger.info(f"Found table search box with placeholder: '{placeholder}'")
+                        break
+                if search_box:
                     break
-            except:
+            except Exception as e:
+                logger.debug(f"Search method {method} failed: {e}")
                 continue
         
         if not search_box:
-            logger.error("Could not find search box")
-            return False
-        
-        # Search and select each device
-        for serial in device_serials:
-            logger.info(f"Searching for device {serial}")
+            logger.error("Could not find table search box!")
+            # Take a screenshot to debug
+            self.save_debug_info("no_table_search_box", save_html=True)
             
-            try:
-                # Clear and search for this specific device
-                search_box.clear()
-                search_box.send_keys(serial)
-                search_box.send_keys(Keys.RETURN)
-                
-                # Wait for search results to load
-                time.sleep(3)
-                
-                # Now try to find and select the checkbox
-                device_selected = False
-                
-                # Method 1: Find checkbox in the filtered results
-                checkbox_selectors = [
-                    # Generic checkbox in any table row (after search there should be only one)
-                    (By.CSS_SELECTOR, "tbody tr input[type='checkbox']"),
-                    (By.CSS_SELECTOR, "table tr input[type='checkbox']"),
-                    (By.XPATH, "//tbody//tr//input[@type='checkbox']"),
-                    (By.XPATH, "//table//tr//input[@type='checkbox']"),
-                    # First visible checkbox that's not a header checkbox
-                    (By.CSS_SELECTOR, "td input[type='checkbox']"),
-                    (By.XPATH, "//td//input[@type='checkbox']"),
-                ]
-                
-                # First, let's see what's on the page after search
+            # Try alternative: construct search URL directly
+            logger.info("Attempting to use URL-based search as fallback")
+        
+        selected_count = 0
+        
+        # Process each device
+        for serial in device_serials:
+            if search_box:
                 try:
-                    all_rows = self.driver.find_elements(By.CSS_SELECTOR, "tbody tr")
-                    logger.info(f"After search, found {len(all_rows)} rows")
-                    for i, row in enumerate(all_rows[:3]):
-                        logger.info(f"Row {i}: {row.text}")
+                    # Clear the search box completely - multiple methods
+                    try:
+                        # Method 1: Clear and verify
+                        search_box.clear()
+                        time.sleep(0.5)
+                        
+                        # Method 2: Select all and delete
+                        search_box.send_keys(Keys.CONTROL + "a")
+                        search_box.send_keys(Keys.DELETE)
+                        time.sleep(0.5)
+                        
+                        # Method 3: Use JavaScript to clear
+                        self.driver.execute_script("arguments[0].value = '';", search_box)
+                        time.sleep(0.5)
+                    except:
+                        logger.warning("Failed to clear search box completely")
+                    
+                    # Now enter the serial
+                    search_box.send_keys(serial)
+                    search_box.send_keys(Keys.RETURN)
+                    time.sleep(3)
+                    logger.info(f"Searched for device {serial}")
+                    
+                    # Verify what's in the search box
+                    current_search_value = search_box.get_attribute('value')
+                    if current_search_value != serial:
+                        logger.warning(f"Search box contains '{current_search_value}' instead of '{serial}'")
+                        # Try one more time with JavaScript
+                        self.driver.execute_script("arguments[0].value = arguments[1];", search_box, serial)
+                        search_box.send_keys(Keys.RETURN)
+                        time.sleep(3)
+                    
+                    # Wait for search results to load
+                    try:
+                        # Wait for either results or "no results" message
+                        WebDriverWait(self.driver, 5).until(
+                            lambda driver: len(driver.find_elements(By.CSS_SELECTOR, "table tbody tr")) > 0 or
+                                          len(driver.find_elements(By.XPATH, "//*[contains(text(), 'No devices found') or contains(text(), 'No results')]")) > 0
+                        )
+                    except:
+                        logger.warning("Timeout waiting for search results")
+                except Exception as e:
+                    logger.warning(f"Failed to search for {serial}: {e}")
+                    # Try URL-based search as fallback
+                    current_url = self.driver.current_url
+                    # Remove any existing search query
+                    base_url = current_url.split('?')[0]
+                    search_url = f"{base_url}?timespan=86400&search_query={serial}"
+                    logger.info(f"Using URL-based search: {search_url}")
+                    self.driver.get(search_url)
+                    time.sleep(3)
+            else:
+                # No search box found, use URL-based search
+                current_url = self.driver.current_url
+                base_url = current_url.split('?')[0]
+                search_url = f"{base_url}?timespan=86400&search_query={serial}"
+                logger.info(f"Using URL-based search (no search box): {search_url}")
+                self.driver.get(search_url)
+                time.sleep(3)
+            
+            # Find device row by serial number
+            device_found = False
+            rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr, tr")
+            
+            logger.info(f"Found {len(rows)} table rows after searching for {serial}")
+            
+            # If we have rows, check them more carefully
+            if len(rows) > 0:
+                # Log details of first few rows
+                for i, row in enumerate(rows[:3]):
+                    row_text = row.text
+                    if row_text.strip():  # Only log non-empty rows
+                        logger.debug(f"Row {i} text: {row_text[:200]}")
+                        
+                        # Check all cells in the row
+                        cells = row.find_elements(By.TAG_NAME, "td")
+                        for j, cell in enumerate(cells):
+                            cell_text = cell.text.strip()
+                            if cell_text:
+                                logger.debug(f"  Cell {j}: {cell_text}")
+            
+            # If no rows or only header row after search
+            if len(rows) <= 1:
+                logger.warning(f"No results found for device {serial}")
+                # Save HTML to debug
+                self.save_debug_info(f"no_results_{serial}", save_html=True)
+                continue
+            
+            for row in rows:
+                row_text = row.text
+                # Log row details for debugging
+                if serial in row_text:
+                    logger.info(f"Found device row containing serial {serial}")
+                    logger.debug(f"Row text: {row_text}")
+                    
+                    # Also check if serial might be in a specific cell
+                    cells = row.find_elements(By.TAG_NAME, "td")
+                    for i, cell in enumerate(cells):
+                        if serial in cell.text:
+                            logger.debug(f"Serial found in cell {i}: {cell.text}")
+                    
+                    # Scroll the row into view to ensure it's not hidden
+                    self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", row)
+                    time.sleep(1)
+                    
+                    # Try multiple methods to find and click the checkbox
+                    checkbox_clicked = False
+                    
+                    # Method 1: Look for checkbox in the first cell
+                    try:
+                        first_cell = row.find_element(By.CSS_SELECTOR, "td:first-child")
+                        checkbox = first_cell.find_element(By.CSS_SELECTOR, "input[type='checkbox']")
+                        
+                        # Use JavaScript to click if the element might be obscured
+                        self.driver.execute_script("arguments[0].click();", checkbox)
+                        checkbox_clicked = True
+                        logger.info("Selected device checkbox using JavaScript click")
+                    except Exception as e:
+                        logger.debug(f"Method 1 failed: {e}")
+                    
+                    # Method 2: Find any checkbox in the row
+                    if not checkbox_clicked:
+                        try:
+                            checkbox = row.find_element(By.CSS_SELECTOR, "input[type='checkbox']")
+                            self.driver.execute_script("arguments[0].click();", checkbox)
+                            checkbox_clicked = True
+                            logger.info("Selected device checkbox in row")
+                        except Exception as e:
+                            logger.debug(f"Method 2 failed: {e}")
+                    
+                    # Method 3: Click on the row itself if it's selectable
+                    if not checkbox_clicked:
+                        try:
+                            # Some tables select the row when clicking anywhere on it
+                            self.driver.execute_script("arguments[0].click();", row)
+                            time.sleep(1)
+                            
+                            # Check if a checkbox appeared or got selected
+                            try:
+                                checkbox = row.find_element(By.CSS_SELECTOR, "input[type='checkbox']:checked")
+                                checkbox_clicked = True
+                                logger.info("Row click selected the device")
+                            except:
+                                pass
+                        except Exception as e:
+                            logger.debug(f"Method 3 failed: {e}")
+                    
+                    if checkbox_clicked:
+                        device_found = True
+                        selected_count += 1
+                        time.sleep(1)
+                        break
+                    else:
+                        logger.error(f"Could not select device checkbox for {serial}")
+                        
+                        # Take a screenshot to debug
+                        self.save_debug_info(f"checkbox_selection_failed_{serial}")
+                        
+                        # Try to identify what's blocking the checkbox
+                        try:
+                            # Check if there's an overlay or menu covering the checkbox
+                            overlays = self.driver.find_elements(By.CSS_SELECTOR, "[class*='overlay'], [class*='menu'], [class*='dropdown']")
+                            for overlay in overlays:
+                                if overlay.is_displayed():
+                                    logger.info(f"Found potential overlay: {overlay.get_attribute('class')}")
+                        except:
+                            pass
+            
+            if not device_found:
+                logger.warning(f"Device {serial} not found in table - may already be removed from network")
+                # Capture current state for debugging
+                self.save_debug_info(f"device_not_found_{serial}", save_html=True)
+                
+                # Check if we're on the right page
+                current_url = self.driver.current_url
+                if "/switches" not in current_url:
+                    logger.error(f"Not on switches page! Current URL: {current_url}")
+                
+                # Check for any error messages on the page
+                try:
+                    error_messages = self.driver.find_elements(By.CSS_SELECTOR, "[class*='error'], [class*='alert'], [class*='warning']")
+                    for msg in error_messages:
+                        if msg.text and "no matches" not in msg.text.lower():
+                            logger.warning(f"Found error/warning message: {msg.text}")
                 except:
                     pass
-                
-                # Now try to find checkboxes
-                for cb_method, cb_selector in checkbox_selectors:
-                    try:
-                        # Get all matching checkboxes
-                        checkboxes = self.driver.find_elements(cb_method, cb_selector)
-                        logger.info(f"Found {len(checkboxes)} checkboxes with {cb_method}")
-                        
-                        # Try to interact with checkboxes even if not visible
-                        for idx, checkbox in enumerate(checkboxes):
-                            try:
-                                # Check if this checkbox is in a row containing our serial
-                                parent_row = checkbox.find_element(By.XPATH, "./ancestor::tr")
-                                row_text = parent_row.text
-                                
-                                # Log what we found
-                                logger.debug(f"Checking checkbox {idx} in row: {row_text[:100]}...")
-                                
-                                # If the row contains our serial, try to select it
-                                if serial in row_text or (len(checkboxes) == 1 and "No matches" not in row_text):
-                                    # Try different methods to select the checkbox
-                                    try:
-                                        # Method 1: Direct click (even if not visible)
-                                        checkbox.click()
-                                        logger.info(f"Selected device {serial} with direct click")
-                                        device_selected = True
-                                    except:
-                                        try:
-                                            # Method 2: JavaScript click
-                                            self.driver.execute_script("arguments[0].click();", checkbox)
-                                            logger.info(f"Selected device {serial} with JavaScript click")
-                                            device_selected = True
-                                        except:
-                                            try:
-                                                # Method 3: Set checked property directly
-                                                self.driver.execute_script("arguments[0].checked = true;", checkbox)
-                                                logger.info(f"Selected device {serial} by setting checked property")
-                                                device_selected = True
-                                            except:
-                                                # Method 4: Hover over row first, then click
-                                                try:
-                                                    from selenium.webdriver.common.action_chains import ActionChains
-                                                    actions = ActionChains(self.driver)
-                                                    actions.move_to_element(parent_row).perform()
-                                                    time.sleep(0.5)
-                                                    # Try clicking after hover
-                                                    checkbox.click()
-                                                    logger.info(f"Selected device {serial} after hover")
-                                                    device_selected = True
-                                                except:
-                                                    logger.debug("All selection methods failed for this checkbox")
-                                    
-                                    if device_selected:
-                                        selected_count += 1
-                                        break
-                                        
-                            except Exception as e:
-                                logger.debug(f"Error processing checkbox {idx}: {e}")
-                                continue
-                        
-                        if device_selected:
-                            break
-                            
-                    except Exception as e:
-                        logger.debug(f"Error with selector {cb_method}: {e}")
-                        continue
-                
-                # Method 2: If checkbox selection failed, try clicking the row
-                if not device_selected:
-                    logger.info(f"Checkbox selection failed, trying row click for device {serial}")
-                    try:
-                        # Find the row containing our serial
-                        rows = self.driver.find_elements(By.CSS_SELECTOR, "tbody tr")
-                        for row in rows:
-                            if serial in row.text:
-                                try:
-                                    # Try different click methods on the row
-                                    # Method 1: Click the row
-                                    row.click()
-                                    logger.info(f"Clicked on row containing {serial}")
-                                    device_selected = True
-                                    selected_count += 1
-                                    time.sleep(0.5)
-                                except:
-                                    try:
-                                        # Method 2: Click first cell
-                                        first_cell = row.find_element(By.CSS_SELECTOR, "td:first-child")
-                                        first_cell.click()
-                                        logger.info(f"Clicked on first cell of row containing {serial}")
-                                        device_selected = True
-                                        selected_count += 1
-                                        time.sleep(0.5)
-                                    except:
-                                        try:
-                                            # Method 3: JavaScript click on row
-                                            self.driver.execute_script("arguments[0].click();", row)
-                                            logger.info(f"JavaScript clicked on row containing {serial}")
-                                            device_selected = True
-                                            selected_count += 1
-                                            time.sleep(0.5)
-                                        except:
-                                            logger.debug("All row click methods failed")
-                                break
-                    except Exception as e:
-                        logger.debug(f"Row selection failed: {e}")
-                
-                # Method 3: Try keyboard selection
-                if not device_selected:
-                    logger.info(f"Trying keyboard selection for device {serial}")
-                    try:
-                        # Find the first row after search
-                        first_row = self.driver.find_element(By.CSS_SELECTOR, "tbody tr:first-child")
-                        if first_row and serial in first_row.text:
-                            # Click on the row to focus it
-                            first_row.click()
-                            time.sleep(0.5)
-                            # Press space to select
-                            from selenium.webdriver.common.action_chains import ActionChains
-                            actions = ActionChains(self.driver)
-                            actions.send_keys(Keys.SPACE).perform()
-                            logger.info(f"Used keyboard (space) to select device {serial}")
-                            device_selected = True
-                            selected_count += 1
-                    except Exception as e:
-                        logger.debug(f"Keyboard selection failed: {e}")
-                
-                if not device_selected:
-                    logger.warning(f"Could not select device {serial} even after search")
-                    # Take a screenshot for this specific device
-                    try:
-                        self.driver.save_screenshot(f"device_not_found_{serial}_{int(time.time())}.png")
-                    except:
-                        pass
-                
-            except Exception as e:
-                logger.error(f"Error searching for device {serial}: {e}")
-                continue
         
-        # Clear the search to show all selected devices
-        try:
-            search_box.clear()
-            search_box.send_keys(Keys.RETURN)
-            time.sleep(2)
-        except:
-            pass
+        # Clear search to show all selected devices
+        if search_box and selected_count > 0:
+            try:
+                # Clear search box completely
+                search_box.clear()
+                search_box.send_keys(Keys.CONTROL + "a")
+                search_box.send_keys(Keys.DELETE)
+                self.driver.execute_script("arguments[0].value = '';", search_box)
+                search_box.send_keys(Keys.RETURN)
+                time.sleep(2)
+                logger.info("Cleared search to show all selected devices")
+            except:
+                logger.warning("Failed to clear search box at end")
         
         if selected_count == 0:
-            logger.error("No devices were selected")
-            return False
+            logger.warning("No devices were selected - they may already be removed from the network")
+            logger.info("Continuing with migration process...")
+            return True  # Continue anyway instead of failing
         
-        logger.info(f"Selected {selected_count} devices, looking for Remove button")
+        logger.info(f"Selected {selected_count} devices out of {len(device_serials)} requested")
         
-        # Now look for the Remove button
+        # Look for Remove button
         remove_button = None
-        remove_button_selectors = [
-            # Based on the screenshot, the Remove button appears after selection
-            (By.XPATH, "//button[text()='Remove']"),
-            (By.XPATH, "//button[contains(text(), 'Remove')]"),
-            (By.CSS_SELECTOR, "button.btn-remove"),
-            (By.CSS_SELECTOR, "button.remove"),
-            # Look in the action bar that appears when items are selected
-            (By.CSS_SELECTOR, ".action-bar button:contains('Remove')"),
-            (By.CSS_SELECTOR, ".selected-actions button:contains('Remove')"),
-            (By.XPATH, "//div[contains(@class, 'selected')]//button[contains(text(), 'Remove')]"),
-            # Generic button search
-            (By.XPATH, "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'remove')]"),
-        ]
+        buttons = self.driver.find_elements(By.TAG_NAME, "button")
         
-        # Wait a bit for the button to appear after selection
-        time.sleep(2)
-        
-        for method, selector in remove_button_selectors:
-            try:
-                if method == By.CSS_SELECTOR and ":contains" in selector:
-                    # Skip jQuery-style selectors
-                    continue
-                    
-                buttons = self.driver.find_elements(method, selector)
-                for btn in buttons:
-                    if btn.is_displayed() and btn.is_enabled():
-                        remove_button = btn
-                        logger.info(f"Found Remove button: '{btn.text}'")
-                        break
-                if remove_button:
+        for btn in buttons:
+            if btn.is_displayed() and btn.is_enabled():
+                btn_text = btn.text.lower()
+                if 'remove' in btn_text:
+                    remove_button = btn
+                    logger.info(f"Found Remove button: '{btn.text}'")
                     break
-            except:
-                continue
         
         if not remove_button:
-            logger.error("Could not find Remove button")
-            # List all visible buttons for debugging
-            try:
-                all_buttons = self.driver.find_elements(By.TAG_NAME, "button")
-                visible_buttons = [(btn.text, btn.is_displayed()) for btn in all_buttons if btn.text]
-                logger.info(f"All buttons on page: {visible_buttons}")
-            except:
-                pass
+            logger.error("No Remove button found")
+            # Take screenshot for debugging
+            self.save_debug_info("no_remove_button")
             return False
         
-        # Click the Remove button
+        # Click Remove button
         try:
             remove_button.click()
             logger.info("Clicked Remove button")
@@ -1374,262 +1314,421 @@ class MerakiUIAutomation:
                 logger.error(f"Failed to click Remove button: {e}")
                 return False
         
-        # Wait for confirmation dialog
         time.sleep(2)
         
-        # Confirm removal
-        confirm_selectors = [
-            (By.XPATH, "//button[contains(text(), 'Remove from network')]"),
-            (By.XPATH, "//button[contains(text(), 'Confirm')]"),
-            (By.XPATH, "//button[contains(text(), 'Yes')]"),
-            (By.XPATH, "//button[text()='Remove']"),
-            # Modal buttons
-            (By.CSS_SELECTOR, ".modal button.confirm"),
-            (By.CSS_SELECTOR, ".modal button.danger"),
-            (By.XPATH, "//div[contains(@class, 'modal')]//button[contains(text(), 'Remove')]"),
-            (By.XPATH, "//div[@role='dialog']//button[contains(text(), 'Remove')]"),
-        ]
-        
-        confirmed = False
-        for method, selector in confirm_selectors:
-            try:
-                confirm_btn = WebDriverWait(self.driver, 5).until(
-                    EC.element_to_be_clickable((method, selector))
-                )
-                confirm_btn.click()
-                logger.info("Clicked confirmation button")
-                confirmed = True
-                break
-            except:
-                continue
-        
-        if not confirmed:
-            logger.error("Could not find confirmation button")
-            return False
-        
-        # Wait for removal to complete
-        time.sleep(5)
-        
-        logger.info(f"Successfully initiated removal of {selected_count} devices from network")
-        return True
-    
-    def unclaim_devices(self, org_name: str, device_serials: List[str]) -> bool:
-        """Unclaim devices from organization (after removing from network)"""
+        # Confirm removal - based on debug.py successful approach
         try:
-            # Navigate to Organization > Inventory
-            logger.info("Navigating to Organization > Inventory")
-            current_url = self.driver.current_url
+            # Wait for the confirmation dialog to appear
+            time.sleep(1)
             
-            if "/organization/" in current_url:
-                # Try direct URL navigation
-                url_parts = current_url.split('/manage/')
-                if len(url_parts) > 1:
-                    base_url = url_parts[0]
-                    inventory_url = f"{base_url}/manage/organization/inventory"
+            # Look for the Remove button in the confirmation dialog
+            # The dialog has a blue "Remove" button (not "Confirm" or "Yes")
+            confirm_methods = [
+                # Primary: Look for Remove button in a modal/dialog
+                (By.XPATH, "//div[contains(@class, 'modal') or contains(@class, 'dialog')]//button[contains(text(), 'Remove')]"),
+                # Secondary: Any blue/primary Remove button
+                (By.XPATH, "//button[contains(@class, 'primary') or contains(@class, 'blue')][contains(text(), 'Remove')]"),
+                # Tertiary: Just the Remove button text (but not the first one we clicked)
+                (By.XPATH, "(//button[contains(text(), 'Remove')])[last()]"),
+                # Look for Remove button that's not disabled
+                (By.XPATH, "//button[contains(text(), 'Remove') and not(@disabled)]"),
+                # Try the specific modal button
+                (By.CSS_SELECTOR, ".modal button.primary, .dialog button.primary, button[class*='primary'][class*='button']"),
+            ]
+            
+            confirm_btn = None
+            for method, selector in confirm_methods:
+                try:
+                    elements = self.driver.find_elements(method, selector)
+                    # Find the Remove button that's in the dialog (not the one we already clicked)
+                    for elem in elements:
+                        if elem.is_displayed() and elem.is_enabled():
+                            # Check if this is in a modal/dialog context
+                            parent_html = elem.get_attribute('outerHTML')
+                            logger.debug(f"Found potential confirm button: {elem.text}")
+                            if elem != remove_button:  # Make sure it's not the same button
+                                confirm_btn = elem
+                                logger.info(f"Found confirmation button: '{elem.text}'")
+                                break
+                    if confirm_btn:
+                        break
+                except Exception as e:
+                    logger.debug(f"Method failed: {e}")
+            
+            if not confirm_btn:
+                # Last resort: find all visible Remove buttons and click the last one
+                all_remove_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Remove')]")
+                for btn in reversed(all_remove_buttons):
+                    if btn.is_displayed() and btn.is_enabled():
+                        confirm_btn = btn
+                        logger.info(f"Using last Remove button as confirmation")
+                        break
+            
+            if confirm_btn:
+                confirm_btn.click()
+                logger.info("Clicked confirmation Remove button")
+                time.sleep(5)
+                
+                logger.info(f"Successfully initiated removal of {selected_count} devices from network")
+                return True
+            else:
+                logger.error("Could not find confirmation Remove button")
+                self.save_debug_info("no_confirm_button")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Could not confirm device removal: {e}")
+            self.save_debug_info("removal_confirmation_failed")
+            return False
+    
+    def navigate_to_inventory(self):
+        """Navigate to Organization > Inventory"""
+        logger.info("Navigating to Organization > Inventory")
+        
+        current_url = self.driver.current_url
+        logger.info(f"Current URL before navigation: {current_url}")
+        
+        # First, we need to get out of network context if we're in one
+        if "/n/" in current_url:
+            logger.info("Currently in network context, need to switch to organization level")
+            # Click on organization name in breadcrumb or use org selector
+            try:
+                # Method 1: Click on org in breadcrumb
+                org_breadcrumb = self.driver.find_element(By.XPATH, "//a[contains(@href, '/organization')]")
+                org_breadcrumb.click()
+                time.sleep(3)
+                logger.info("Clicked organization breadcrumb")
+            except:
+                try:
+                    # Method 2: Use org selector dropdown
+                    org_selector = self.driver.find_element(By.CSS_SELECTOR, ".org-selector, [class*='org-selector']")
+                    org_selector.click()
+                    time.sleep(2)
+                    # Click on "Organization > Overview" or similar
+                    org_overview = self.driver.find_element(By.XPATH, "//a[contains(text(), 'Overview')]")
+                    org_overview.click()
+                    time.sleep(3)
+                    logger.info("Used org selector to go to organization level")
+                except:
+                    logger.warning("Could not exit network context via UI")
+        
+        # Now try to navigate to inventory
+        # Method 1: Direct URL navigation
+        try:
+            if "/o/" in current_url:
+                # Extract organization part and build inventory URL
+                import re
+                match = re.search(r'/o/([^/]+)', current_url)
+                if match:
+                    org_part = match.group(0)
+                    base_url = current_url.split('/o/')[0]
+                    inventory_url = f"{base_url}{org_part}/manage/organization/inventory"
                     logger.info(f"Navigating directly to: {inventory_url}")
                     self.driver.get(inventory_url)
                     time.sleep(5)
+                    
+                    if "/inventory" in self.driver.current_url:
+                        logger.info("Successfully navigated to inventory page via direct URL")
+                        return True
+        except Exception as e:
+            logger.warning(f"Direct URL navigation failed: {e}")
+        
+        # Method 2: Try menu navigation
+        try:
+            # Look for Organization menu first
+            org_menu_selectors = [
+                (By.XPATH, "//span[text()='Organization']"),
+                (By.XPATH, "//span[contains(text(), 'Organization')]"),
+                (By.XPATH, "//a[text()='Organization']"),
+                (By.XPATH, "//nav//span[text()='Organization']"),
+            ]
             
-            # If not on inventory page, try to find the menu
-            if "/inventory" not in self.driver.current_url:
-                # Try to find Organization menu or direct Inventory link
-                menu_found = False
-                menu_methods = [
-                    # Direct inventory link
+            org_menu_clicked = False
+            for method, selector in org_menu_selectors:
+                try:
+                    org_menu = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable((method, selector))
+                    )
+                    org_menu.click()
+                    org_menu_clicked = True
+                    logger.info("Clicked on Organization menu")
+                    time.sleep(2)
+                    break
+                except:
+                    continue
+            
+            if org_menu_clicked:
+                # Now look for Inventory submenu
+                inventory_link_selectors = [
+                    (By.XPATH, "//a[text()='Inventory']"),
                     (By.XPATH, "//a[contains(text(), 'Inventory')]"),
                     (By.XPATH, "//a[contains(@href, '/inventory')]"),
                     (By.LINK_TEXT, "Inventory"),
-                    (By.PARTIAL_LINK_TEXT, "Inventory"),
-                    # Organization menu
-                    (By.XPATH, "//span[text()='Organization']"),
-                    (By.XPATH, "//span[contains(text(), 'Organization')]"),
                 ]
                 
-                for method, selector in menu_methods:
+                for method, selector in inventory_link_selectors:
                     try:
-                        element = WebDriverWait(self.driver, 5).until(
+                        inventory_link = WebDriverWait(self.driver, 5).until(
                             EC.element_to_be_clickable((method, selector))
                         )
+                        inventory_link.click()
+                        logger.info("Clicked on Inventory submenu")
+                        time.sleep(3)
                         
-                        if "Inventory" in element.text or "inventory" in (element.get_attribute('href') or ''):
-                            element.click()
-                            menu_found = True
-                            logger.info("Clicked on Inventory link")
-                            break
-                        elif "Organization" in element.text:
-                            element.click()
-                            logger.info("Clicked on Organization menu")
-                            time.sleep(2)
-                            
-                            inventory_link = self.wait.until(
-                                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Inventory')]"))
-                            )
-                            inventory_link.click()
-                            menu_found = True
-                            logger.info("Clicked on Inventory submenu")
-                            break
-                    except Exception:
+                        if "/inventory" in self.driver.current_url:
+                            logger.info("Successfully navigated to inventory page via menu")
+                            return True
+                    except:
                         continue
-                
-                if not menu_found:
-                    logger.error("Could not navigate to inventory page")
-                    return False
             
-            time.sleep(3)
-            
-            # Search and select devices
-            for serial in device_serials:
-                logger.info(f"Selecting device {serial}")
-                
-                # Search for device
-                search_box = None
-                search_methods = [
-                    (By.CLASS_NAME, "search-box"),
-                    (By.CSS_SELECTOR, "input[type='search']"),
-                    (By.CSS_SELECTOR, "input[placeholder*='Search' i]"),
-                    (By.CSS_SELECTOR, "input[placeholder*='search' i]"),
-                    (By.XPATH, "//input[@type='search']"),
-                    (By.XPATH, "//input[contains(@placeholder, 'Search')]")
-                ]
-                
-                for method, selector in search_methods:
-                    try:
-                        search_box = self.wait.until(EC.presence_of_element_located((method, selector)))
+        except Exception as e:
+            logger.warning(f"Menu navigation failed: {e}")
+        
+        # Method 3: Look for direct inventory link anywhere on page
+        try:
+            inventory_links = self.driver.find_elements(By.XPATH, "//a[contains(@href, '/inventory')]")
+            for link in inventory_links:
+                if link.is_displayed():
+                    href = link.get_attribute('href')
+                    if '/organization/inventory' in href:
+                        logger.info(f"Found direct inventory link: {href}")
+                        link.click()
+                        time.sleep(3)
+                        
+                        if "/inventory" in self.driver.current_url:
+                            logger.info("Successfully navigated to inventory page via direct link")
+                            return True
+        except:
+            pass
+        
+        # Method 4: Force navigation via URL manipulation
+        try:
+            current_url = self.driver.current_url
+            # Build inventory URL based on current URL structure
+            if "meraki.com" in current_url:
+                # Extract base URL
+                parts = current_url.split('/')
+                base_parts = []
+                for part in parts:
+                    base_parts.append(part)
+                    if part.startswith('o_') or (len(part) > 10 and not '.' in part):
+                        # Found organization ID
                         break
-                    except TimeoutException:
-                        continue
                 
-                if not search_box:
-                    logger.error("Could not find search box")
-                    return False
-                
-                search_box.clear()
-                search_box.send_keys(serial)
-                search_box.send_keys(Keys.RETURN)
-                
-                # Wait for search results to load
-                time.sleep(3)
-                
-                # Select device checkbox
-                checkbox = None
-                checkbox_methods = [
-                    (By.XPATH, f"//tr[contains(.,'{serial}')]/td[1]//input[@type='checkbox']"),
-                    (By.XPATH, f"//tr[contains(.,'{serial}')]//input[@type='checkbox']"),
-                    (By.XPATH, f"//td[contains(text(),'{serial}')]/parent::tr//input[@type='checkbox']"),
-                    (By.XPATH, f"//input[@type='checkbox' and ancestor::tr[contains(., '{serial}')]]"),
-                ]
-                
-                for method, selector in checkbox_methods:
-                    try:
-                        checkbox = WebDriverWait(self.driver, 5).until(
-                            EC.element_to_be_clickable((method, selector))
-                        )
-                        logger.info(f"Found checkbox with: {method}")
-                        break
-                    except Exception:
-                        continue
-                
-                # If specific selectors fail, use the approach that worked
-                if not checkbox:
-                    logger.info("Using alternative checkbox selection method")
-                    all_rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr, table tr")
+                if base_parts:
+                    inventory_url = '/'.join(base_parts) + '/manage/organization/inventory'
+                    logger.info(f"Force navigating to: {inventory_url}")
+                    self.driver.get(inventory_url)
+                    time.sleep(5)
                     
-                    for row in all_rows:
-                        if serial in row.text:
-                            row_checkboxes = row.find_elements(By.CSS_SELECTOR, "input[type='checkbox']")
-                            if row_checkboxes:
-                                try:
-                                    row_checkboxes[0].click()
-                                    logger.info("Clicked checkbox using alternative method")
-                                    checkbox = row_checkboxes[0]
-                                    break
-                                except Exception as e:
-                                    # Try JavaScript click
-                                    try:
-                                        self.driver.execute_script("arguments[0].click();", row_checkboxes[0])
-                                        logger.info("Clicked checkbox using JavaScript")
-                                        checkbox = row_checkboxes[0]
-                                        break
-                                    except:
-                                        logger.error(f"Failed to click checkbox: {e}")
-                
-                if not checkbox:
-                    logger.error(f"Could not select device {serial}")
-                    return False
-            
-            # Wait for UI to update after checkbox selection
-            time.sleep(2)
-            
-            # Click unclaim button
-            logger.info("Looking for Unclaim button")
-            unclaim_btn = None
-            
-            # Wait for Unclaim button to appear (might be dynamically shown)
-            for attempt in range(3):
-                unclaim_methods = [
-                    (By.XPATH, "//button[contains(text(), 'Unclaim')]"),
-                    (By.XPATH, "//button[contains(., 'Unclaim')]"),
-                    (By.XPATH, "//button[contains(@class, 'unclaim')]"),
-                    (By.XPATH, "//a[contains(text(), 'Unclaim')]"),
-                    (By.XPATH, "//button[text()='Unclaim']"),
-                    (By.XPATH, "//button[span[contains(text(), 'Unclaim')]]"),
-                ]
-                
-                for method, selector in unclaim_methods:
-                    try:
-                        unclaim_btn = WebDriverWait(self.driver, 5).until(
-                            EC.element_to_be_clickable((method, selector))
-                        )
-                        logger.info(f"Found Unclaim button with: {method}")
-                        break
-                    except Exception:
+                    if "/inventory" in self.driver.current_url:
+                        logger.info("Successfully navigated to inventory page via forced URL")
+                        return True
+        except Exception as e:
+            logger.warning(f"Force URL navigation failed: {e}")
+        
+        # If all methods failed, save debug info
+        self.save_debug_info("inventory_navigation_failed", save_html=True)
+        logger.error("All inventory navigation methods failed")
+        logger.error(f"Final URL: {self.driver.current_url}")
+        
+        return False
+    
+    def unclaim_devices(self, org_name: str, device_serials: List[str]) -> bool:
+        """Unclaim devices from organization"""
+        logger.info(f"Unclaiming {len(device_serials)} devices from organization '{org_name}'")
+        
+        # Navigate to inventory
+        if not self.navigate_to_inventory():
+            return False
+        
+        # Wait for page to load
+        time.sleep(3)
+        
+        # Find the search box (similar to network removal)
+        search_box = None
+        search_selectors = [
+            # Look for search box in the inventory table area
+            (By.CSS_SELECTOR, "div.inventory-table input[type='search']"),
+            (By.CSS_SELECTOR, "section input[type='search']"),
+            (By.CSS_SELECTOR, "main input[type='search']"),
+            (By.XPATH, "//main//input[@type='search']"),
+            (By.XPATH, "//section//input[@type='search']"),
+            (By.CSS_SELECTOR, "input[placeholder*='serial' i], input[placeholder*='device' i]"),
+        ]
+        
+        # Find ALL search boxes and log them
+        all_search_boxes = self.driver.find_elements(By.CSS_SELECTOR, "input[type='search']")
+        logger.info(f"Found {len(all_search_boxes)} search boxes on inventory page")
+        for i, box in enumerate(all_search_boxes):
+            placeholder = box.get_attribute('placeholder') or 'No placeholder'
+            is_displayed = box.is_displayed()
+            logger.debug(f"Search box {i}: placeholder='{placeholder}', displayed={is_displayed}")
+        
+        # Find the right search box (not the global one)
+        for method, selector in search_selectors:
+            try:
+                elements = self.driver.find_elements(method, selector)
+                for element in elements:
+                    placeholder = element.get_attribute('placeholder') or ''
+                    if 'everything' in placeholder.lower() or 'global' in placeholder.lower():
                         continue
-                
+                    try:
+                        nav_parent = element.find_element(By.XPATH, "ancestor::nav")
+                        continue
+                    except:
+                        pass
+                    
+                    if element.is_displayed():
+                        search_box = element
+                        logger.info(f"Found inventory search box with placeholder: '{placeholder}'")
+                        break
+                if search_box:
+                    break
+            except:
+                continue
+        
+        if not search_box:
+            logger.warning("Could not find inventory search box, will try to select devices without search")
+        
+        # Track selected devices
+        selected_count = 0
+        
+        # Search and select devices
+        for serial in device_serials:
+            if search_box:
+                try:
+                    # Clear search box completely
+                    search_box.clear()
+                    search_box.send_keys(Keys.CONTROL + "a")
+                    search_box.send_keys(Keys.DELETE)
+                    self.driver.execute_script("arguments[0].value = '';", search_box)
+                    time.sleep(0.5)
+                    
+                    # Search for device
+                    search_box.send_keys(serial)
+                    search_box.send_keys(Keys.RETURN)
+                    time.sleep(3)
+                    logger.info(f"Searched for device {serial}")
+                except Exception as e:
+                    logger.warning(f"Failed to search for {serial}: {e}")
+            
+            # Find and select device
+            device_found = False
+            rows = self.driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+            
+            for row in rows:
+                if serial in row.text:
+                    logger.info(f"Found device {serial} in inventory")
+                    
+                    # Try to find and click checkbox
+                    try:
+                        # Method 1: Checkbox in first cell
+                        checkbox = row.find_element(By.CSS_SELECTOR, "td:first-child input[type='checkbox']")
+                        if not checkbox.is_selected():
+                            self.driver.execute_script("arguments[0].click();", checkbox)
+                            device_found = True
+                            selected_count += 1
+                            logger.info(f"Selected device {serial}")
+                    except:
+                        try:
+                            # Method 2: Any checkbox in row
+                            checkbox = row.find_element(By.CSS_SELECTOR, "input[type='checkbox']")
+                            if not checkbox.is_selected():
+                                self.driver.execute_script("arguments[0].click();", checkbox)
+                                device_found = True
+                                selected_count += 1
+                                logger.info(f"Selected device {serial}")
+                        except:
+                            logger.warning(f"Could not select checkbox for device {serial}")
+                    break
+            
+            if not device_found:
+                logger.warning(f"Device {serial} not found in inventory - may already be unclaimed")
+        
+        # Clear search to show all selected devices
+        if search_box and selected_count > 0:
+            try:
+                search_box.clear()
+                self.driver.execute_script("arguments[0].value = '';", search_box)
+                search_box.send_keys(Keys.RETURN)
+                time.sleep(2)
+            except:
+                pass
+        
+        if selected_count == 0:
+            logger.warning("No devices were selected - they may already be unclaimed")
+            logger.info("Continuing with migration...")
+            return True  # Continue anyway
+        
+        logger.info(f"Selected {selected_count} devices for unclaim")
+        
+        # Find and click Unclaim button
+        unclaim_btn = None
+        button_selectors = [
+            (By.XPATH, "//button[contains(text(), 'Unclaim')]"),
+            (By.XPATH, "//button[contains(., 'Unclaim')]"),
+            (By.CSS_SELECTOR, "button.unclaim"),
+            (By.XPATH, "//button[contains(@class, 'unclaim')]"),
+        ]
+        
+        for method, selector in button_selectors:
+            try:
+                buttons = self.driver.find_elements(method, selector)
+                for btn in buttons:
+                    if btn.is_displayed() and btn.is_enabled():
+                        unclaim_btn = btn
+                        logger.info(f"Found unclaim button: {btn.text}")
+                        break
                 if unclaim_btn:
                     break
-                else:
-                    logger.info(f"Unclaim button not found, attempt {attempt + 1}/3, waiting...")
-                    time.sleep(3)
-            
-            if not unclaim_btn:
-                logger.error("Could not find Unclaim button after selecting devices")
-                return False
-            
-            unclaim_btn.click()
-            logger.info("Clicked Unclaim button")
-            
-            # Confirm unclaim
-            time.sleep(2)
-            confirm_btn = None
-            confirm_methods = [
+            except:
+                continue
+        
+        if not unclaim_btn:
+            logger.error("Could not find enabled Unclaim button")
+            self.save_debug_info("no_unclaim_button", save_html=True)
+            return False
+        
+        unclaim_btn.click()
+        logger.info("Clicked Unclaim button")
+        time.sleep(2)
+        
+        # Confirm unclaim
+        try:
+            # Look for confirmation button
+            confirm_selectors = [
                 (By.XPATH, "//button[contains(text(), 'Unclaim from organization')]"),
-                (By.XPATH, "//button[contains(text(), 'Unclaim')]"),
+                (By.XPATH, "//div[contains(@class, 'modal')]//button[contains(text(), 'Unclaim')]"),
+                (By.XPATH, "//button[contains(@class, 'danger')][contains(text(), 'Unclaim')]"),
                 (By.XPATH, "//button[contains(text(), 'Confirm')]"),
                 (By.XPATH, "//button[contains(text(), 'Yes')]"),
-                (By.XPATH, "//button[contains(@class, 'confirm')]"),
-                (By.XPATH, "//button[contains(@class, 'danger')]"),
             ]
             
-            for method, selector in confirm_methods:
+            confirm_btn = None
+            for method, selector in confirm_selectors:
                 try:
                     confirm_btn = WebDriverWait(self.driver, 5).until(
                         EC.element_to_be_clickable((method, selector))
                     )
-                    logger.info(f"Found Confirm button with: {method}")
+                    logger.info(f"Found confirmation button: {confirm_btn.text}")
                     break
-                except Exception:
+                except:
                     continue
             
-            if not confirm_btn:
-                logger.error("Could not find Confirm button")
+            if confirm_btn:
+                confirm_btn.click()
+                logger.info("Confirmed device unclaim")
+                time.sleep(5)
+                return True
+            else:
+                logger.error("Could not find unclaim confirmation button")
+                self.save_debug_info("no_unclaim_confirm", save_html=True)
                 return False
-            
-            confirm_btn.click()
-            logger.info(f"Successfully unclaimed {len(device_serials)} devices")
-            return True
-            
+                
         except Exception as e:
-            logger.error(f"Failed to unclaim devices: {e}")
+            logger.error(f"Could not confirm unclaim: {e}")
+            self.save_debug_info("unclaim_confirm_failed", save_html=True)
             return False
     
     def claim_devices(self, org_name: str, device_serials: List[str]) -> bool:
@@ -1637,57 +1736,8 @@ class MerakiUIAutomation:
         try:
             # Navigate to inventory
             logger.info("Navigating to Organization > Inventory")
-            current_url = self.driver.current_url
-            
-            if "/organization/" in current_url:
-                url_parts = current_url.split('/manage/')
-                if len(url_parts) > 1:
-                    base_url = url_parts[0]
-                    inventory_url = f"{base_url}/manage/organization/inventory"
-                    logger.info(f"Navigating directly to: {inventory_url}")
-                    self.driver.get(inventory_url)
-                    time.sleep(5)
-            
-            if "/inventory" not in self.driver.current_url:
-                menu_found = False
-                menu_methods = [
-                    (By.XPATH, "//a[contains(text(), 'Inventory')]"),
-                    (By.XPATH, "//a[contains(@href, '/inventory')]"),
-                    (By.LINK_TEXT, "Inventory"),
-                    (By.PARTIAL_LINK_TEXT, "Inventory"),
-                    (By.XPATH, "//span[text()='Organization']"),
-                    (By.XPATH, "//span[contains(text(), 'Organization')]"),
-                ]
-                
-                for method, selector in menu_methods:
-                    try:
-                        element = WebDriverWait(self.driver, 5).until(
-                            EC.element_to_be_clickable((method, selector))
-                        )
-                        
-                        if "Inventory" in element.text or "inventory" in (element.get_attribute('href') or ''):
-                            element.click()
-                            menu_found = True
-                            logger.info("Clicked on Inventory link")
-                            break
-                        elif "Organization" in element.text:
-                            element.click()
-                            logger.info("Clicked on Organization menu")
-                            time.sleep(2)
-                            
-                            inventory_link = self.wait.until(
-                                EC.element_to_be_clickable((By.XPATH, "//a[contains(text(), 'Inventory')]"))
-                            )
-                            inventory_link.click()
-                            menu_found = True
-                            logger.info("Clicked on Inventory submenu")
-                            break
-                    except Exception:
-                        continue
-                
-                if not menu_found:
-                    logger.error("Could not navigate to inventory page")
-                    return False
+            if not self.navigate_to_inventory():
+                return False
             
             time.sleep(3)
             
@@ -2060,11 +2110,12 @@ class AutomatedMigrationTool:
                 raise Exception("Failed to select source organization")
             
             if not ui.remove_devices_from_network(source_org_name, source_network_name, device_serials):
-                raise Exception("Failed to remove devices from network")
+                logger.warning("Some devices may not have been removed from network")
+                # Continue anyway as they might already be removed
             
             # Wait for removal to process
-            logger.info("Waiting 30 seconds for network removal to process...")
-            time.sleep(30)
+            logger.info("Waiting 60 seconds for network removal to process...")
+            time.sleep(60)
             
             # Unclaim from source
             logger.info(f"\n3b. Unclaiming devices from organization '{source_org_name}'")
@@ -2072,8 +2123,8 @@ class AutomatedMigrationTool:
                 raise Exception("Failed to unclaim devices")
             
             # Wait for unclaim to process
-            logger.info("Waiting 120 seconds for unclaim to process...")
-            time.sleep(120)
+            logger.info("Waiting 180 seconds for unclaim to process...")
+            time.sleep(180)
             
             # Claim in target
             logger.info(f"\n3c. Claiming devices in organization '{target_org_name}'")
@@ -2084,8 +2135,8 @@ class AutomatedMigrationTool:
                 raise Exception("Failed to claim devices")
         
         # Wait for claim to process
-        logger.info("Waiting 30 seconds for claim to process...")
-        time.sleep(30)
+        logger.info("Waiting 60 seconds for claim to process...")
+        time.sleep(60)
         
         # Step 4: Create network and add devices
         logger.info("\nSTEP 4: Creating network and adding devices")
