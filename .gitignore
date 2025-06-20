@@ -1,6 +1,6 @@
 __pycache__/
 *.log
 venv/
-preview.json
+*.json
 *.html
 *.png
