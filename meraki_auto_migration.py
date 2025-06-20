@@ -141,8 +141,42 @@ class MerakiAPIClient:
         return self._api_call("GET", f"/networks/{network_id}/devices")
 
     def create_network(self, org_id: str, network_config: Dict) -> str:
-        """Create a new network"""
-        return self._api_call("POST", f"/organizations/{org_id}/networks", data=network_config)['id']
+        """Create a new network or return existing network ID if it already exists"""
+        network_name = network_config.get('name', '')
+
+        # First, check if a network with this name already exists
+        try:
+            existing_networks = self._api_call("GET", f"/organizations/{org_id}/networks")
+            for network in existing_networks:
+                if network['name'] == network_name:
+                    logger.info(f"Network '{network_name}' already exists with ID: {network['id']}")
+                    return network['id']
+        except Exception as e:
+            logger.warning(f"Could not check existing networks: {e}")
+
+        # Try to create the network
+        try:
+            result = self._api_call("POST", f"/organizations/{org_id}/networks", data=network_config)
+            return result['id']
+        except Exception as e:
+            if "400" in str(e):
+                # Try to get more specific error information
+                logger.error(f"Failed to create network. Possible reasons:")
+                logger.error("  - Network name already exists")
+                logger.error("  - Invalid product types for this organization")
+                logger.error("  - Organization doesn't support the requested product types")
+                logger.error(f"Network config attempted: {network_config}")
+
+                # As a fallback, try to find the network again
+                try:
+                    existing_networks = self._api_call("GET", f"/organizations/{org_id}/networks")
+                    for network in existing_networks:
+                        if network['name'] == network_name:
+                            logger.info(f"Found existing network '{network_name}' with ID: {network['id']}")
+                            return network['id']
+                except:
+                    pass
+            raise
 
     def add_devices_to_network(self, network_id: str, serials: List[str]) -> bool:
         """Add devices to network"""
@@ -2806,7 +2840,7 @@ class AutomatedMigrationTool:
         logger.info("\nSTEP 4: Creating network and adding devices")
         logger.info("-" * 50)
 
-        # Create network
+        # Create or find network
         network_name = target_network_name or f"{source_network_name}_migrated"
         network_config = {
             "name": network_name,
@@ -2814,9 +2848,23 @@ class AutomatedMigrationTool:
             "timeZone": backup['network_info'].get('timeZone', 'America/Los_Angeles')
         }
 
-        logger.info(f"Creating network '{network_name}' in target organization...")
-        target_network_id = self.target_api.create_network(target_org_id, network_config)
-        logger.info(f"Created network with ID: {target_network_id}")
+        logger.info(f"Creating or finding network '{network_name}' in target organization...")
+        try:
+            target_network_id = self.target_api.create_network(target_org_id, network_config)
+            logger.info(f"Using network with ID: {target_network_id}")
+        except Exception as e:
+            logger.error(f"Failed to create or find network: {e}")
+
+            # List available networks in the target org
+            logger.info("Available networks in target organization:")
+            try:
+                networks = self.target_api._api_call("GET", f"/organizations/{target_org_id}/networks")
+                for net in networks:
+                    logger.info(f"  - {net['name']} (ID: {net['id']})")
+            except:
+                pass
+
+            raise Exception(f"Cannot proceed without a target network. Error: {e}")
 
         # Add devices to network
         logger.info(f"Adding {len(device_serials)} devices to network...")
