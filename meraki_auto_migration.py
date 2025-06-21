@@ -400,7 +400,7 @@ class ComprehensiveBackup:
                 logger.warning(f"Could not backup management interface for {serial}: {e}")
 
         # Switch ports (all port-level settings)
-        if device_info.get('model', '').startswith('MS'):
+        if device_info.get('model', '').startswith('MS') or device_info.get('model', '').startswith('C9'):
             try:
                 ports = self.api._api_call("GET", f"/devices/{serial}/switch/ports")
                 if ports is not None:
