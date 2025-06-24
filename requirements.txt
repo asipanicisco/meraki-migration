@@ -1,0 +1,21 @@
+# Meraki Automated Migration Tool Suite Requirements
+# Python 3.7+ required
+
+# Core Requirements
+requests>=2.31.0          # For Meraki API interactions
+selenium>=4.15.0          # For browser automation
+psutil>=5.9.0            # For process management (Chrome cleanup)
+
+# Optional but Recommended
+python-dotenv>=1.0.0     # For loading .env files with credentials
+urllib3>=2.0.0           # Updated urllib3 for better SSL handling
+
+# Development/Debug Dependencies (optional)
+ipython>=8.12.0          # For interactive debugging
+pytest>=7.4.0            # For running tests
+pytest-timeout>=2.1.0    # For test timeouts
+
+# Note: You also need to install ChromeDriver separately
+# Ubuntu/Debian: sudo apt-get install chromium-chromedriver
+# macOS: brew install chromedriver
+# Or download from: https://chromedriver.chromium.org/
